@@ -14,7 +14,9 @@ pub mod causal;
 
 pub use patterns::{PatternStore, Pattern};
 pub use similarity::calculate_similarity;
-pub use causal::{CausalStore, CausalEdge};
+pub use causal::CausalStore;
+#[allow(unused_imports)]
+pub use causal::CausalEdge;
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {
@@ -138,7 +140,14 @@ pub async fn show_status() -> Result<()> {
             |row| row.get(0)
         ).unwrap_or(0);
 
+        let causal_edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM causal_edges",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
         println!("Patterns stored: {}", pattern_count);
+        println!("Causal edges: {}", causal_edge_count);
     } else {
         println!("Database: NOT FOUND");
     }
@@ -242,6 +251,49 @@ pub async fn show_stats() -> Result<()> {
 
     if !has_events {
         println!("  No learning events recorded yet.");
+    }
+
+    // Causal Graph Statistics
+    println!();
+    println!("Causal Graph:");
+    println!("-------------");
+
+    let total_edges: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM causal_edges",
+        [],
+        |row| row.get(0)
+    ).unwrap_or(0);
+    println!("  Total edges: {}", total_edges);
+
+    if total_edges > 0 {
+        // Count synergies (lift > 1.5 with >= 3 co-occurrences)
+        let synergies: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM causal_edges WHERE lift > 1.5 AND co_occurrences >= 3",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
+        // Count conflicts (lift < 0.5 with >= 3 co-occurrences)
+        let conflicts: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM causal_edges WHERE lift < 0.5 AND co_occurrences >= 3",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0);
+
+        // Count uncertain (0.5 <= lift <= 1.5 or < 3 co-occurrences)
+        let uncertain = total_edges - synergies - conflicts;
+
+        println!("  Synergies (lift > 1.5): {}", synergies);
+        println!("  Conflicts (lift < 0.5): {}", conflicts);
+        println!("  Uncertain/learning: {}", uncertain);
+
+        // Average co-occurrences
+        let avg_cooccur: f64 = conn.query_row(
+            "SELECT AVG(co_occurrences) FROM causal_edges",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0.0);
+        println!("  Avg co-occurrences: {:.1}", avg_cooccur);
     }
 
     Ok(())
