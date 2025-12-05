@@ -4,8 +4,12 @@
 //! and judge pattern effectiveness.
 
 use crate::learning::trajectory::Trajectory;
-use crate::storage::{PatternStore, Pattern, calculate_similarity};
-use super::verdict::{Verdict, ReflectionVerdict, compute_trajectory_hash};
+use crate::storage::{PatternStore, calculate_similarity};
+#[allow(unused_imports)]
+use crate::storage::Pattern; // Used in find_matching_pattern return type inference
+use super::verdict::{ReflectionVerdict, compute_trajectory_hash};
+#[allow(unused_imports)]
+use super::verdict::Verdict; // Used in judge() internal logic
 use std::path::Path;
 use tracing::debug;
 
@@ -19,6 +23,7 @@ pub struct TrajectoryOutcome {
     /// Types of errors encountered
     pub error_types: Vec<ErrorType>,
     /// Duration in milliseconds (estimated)
+    #[allow(dead_code)] // Reserved for future performance tracking
     pub duration_ms: u64,
     /// Whether the trajectory was abandoned
     pub abandoned: bool,
@@ -231,6 +236,7 @@ impl TrajectoryAnalyzer {
     }
 
     /// Create with custom boost/penalty limits
+    #[allow(dead_code)] // Exposed for external configuration
     pub fn with_limits(max_boost: i32, max_penalty: i32) -> Self {
         Self { max_boost, max_penalty, db_path: None }
     }

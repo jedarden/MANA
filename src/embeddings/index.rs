@@ -3,6 +3,8 @@
 //! Uses a simple but efficient approach for vector search.
 //! Can be upgraded to usearch for HNSW when needed.
 
+#![allow(dead_code)] // Many methods reserved for future index operations
+
 use anyhow::Result;
 use std::collections::BinaryHeap;
 use std::cmp::Ordering;

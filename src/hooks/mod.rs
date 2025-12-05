@@ -7,4 +7,5 @@ mod context_injection;
 pub mod session_end_handler;
 
 pub use context_injection::inject_context;
-pub use session_end_handler::{session_end, AccumulatorState};
+pub use session_end_handler::session_end;
+// AccumulatorState is used directly via crate::hooks::session_end_handler::AccumulatorState

@@ -1,16 +1,9 @@
-# MANA Sync Configuration
-# See: mana sync --help for setup instructions
-#
-# Quick start:
-#   mana sync init git --url git@github.com:user/mana-patterns.git
-#   mana sync push
-#
-enabled = false
+enabled = true
 interval_minutes = 60
 
 [backend]
 type = "Git"
-remote = ""
+remote = "/tmp/.tmpE8lWJg/test-sync-repo"
 branch = "main"
 
 [security]

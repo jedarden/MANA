@@ -19,9 +19,18 @@ mod verdict;
 mod analyzer;
 mod distillation;
 
-pub use verdict::{Verdict, VerdictCategory, ReflectionVerdict};
-pub use analyzer::{TrajectoryAnalyzer, TrajectoryOutcome};
-pub use distillation::{MemoryDistiller, VerdictSummary, VerdictStats};
+pub use verdict::ReflectionVerdict;
+// VerdictCategory and Verdict are used internally; public for future extensions
+#[allow(unused_imports)]
+pub use verdict::{Verdict, VerdictCategory};
+pub use analyzer::TrajectoryAnalyzer;
+// TrajectoryOutcome is used internally; public for future extensions
+#[allow(unused_imports)]
+pub use analyzer::TrajectoryOutcome;
+pub use distillation::MemoryDistiller;
+// VerdictSummary and VerdictStats are used in main.rs analyze command
+#[allow(unused_imports)]
+pub use distillation::{VerdictSummary, VerdictStats};
 
 use anyhow::Result;
 use rusqlite::{Connection, params};
@@ -30,6 +39,7 @@ use std::path::Path;
 use tracing::{debug, info};
 
 /// Reflection engine state
+#[allow(dead_code)] // Reserved for daemon mode state tracking
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReflectionState {
     /// Number of trajectories queued for reflection
@@ -57,8 +67,10 @@ impl Default for ReflectionState {
 #[derive(Debug, Clone)]
 pub struct ReflectionConfig {
     /// Minimum trajectories to trigger data-driven reflection
+    #[allow(dead_code)] // Used by ReflectionEngine::should_reflect
     pub data_threshold: usize,
     /// Hours between time-driven reflections
+    #[allow(dead_code)] // Used by ReflectionEngine::should_reflect
     pub time_interval_hours: u32,
     /// Minimum confidence to act on verdict
     pub min_confidence: f32,
@@ -67,6 +79,7 @@ pub struct ReflectionConfig {
     /// Maximum boost for EFFECTIVE verdicts
     pub max_boost: i32,
     /// Enable failure root cause analysis
+    #[allow(dead_code)] // Reserved for future root cause toggle
     pub analyze_failures: bool,
 }
 
@@ -88,11 +101,13 @@ pub struct ReflectionEngine {
     config: ReflectionConfig,
     analyzer: TrajectoryAnalyzer,
     distiller: MemoryDistiller,
+    #[allow(dead_code)] // Reserved for future database-aware operations
     db_path: Option<std::path::PathBuf>,
 }
 
 impl ReflectionEngine {
     /// Create a new reflection engine
+    #[allow(dead_code)] // Used by with_db_path, exposed for external use
     pub fn new(config: ReflectionConfig) -> Self {
         Self {
             config: config.clone(),
@@ -113,6 +128,7 @@ impl ReflectionEngine {
     }
 
     /// Check if reflection should be triggered based on current state
+    #[allow(dead_code)] // Reserved for daemon mode automatic triggering
     pub fn should_reflect(&self, state: &ReflectionState) -> bool {
         // Data-driven trigger
         if state.queued_trajectories >= self.config.data_threshold {

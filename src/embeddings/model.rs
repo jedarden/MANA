@@ -4,6 +4,8 @@
 //! Currently supports a lightweight hash-based approach for testing,
 //! with optional candle-based transformer models for production.
 
+#![allow(dead_code)] // Many methods reserved for future transformer integration
+
 use anyhow::Result;
 use std::collections::HashMap;
 

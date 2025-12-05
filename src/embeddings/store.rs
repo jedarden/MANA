@@ -6,6 +6,8 @@
 //! - Index building and updating
 //! - Status and statistics
 
+#![allow(dead_code)] // Many methods reserved for future embedding operations
+
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};

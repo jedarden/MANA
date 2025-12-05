@@ -30,8 +30,10 @@ pub struct EmbeddingConfig {
     /// Embedding dimensions
     pub dimensions: usize,
     /// Batch size for embedding generation
+    #[allow(dead_code)] // Reserved for future batch embedding operations
     pub batch_size: usize,
     /// Whether to cache embeddings
+    #[allow(dead_code)] // Reserved for future cache configuration
     pub cache_embeddings: bool,
 }
 
@@ -67,6 +69,7 @@ pub fn status(mana_dir: &Path) -> Result<EmbeddingStatus> {
 #[derive(Debug, Clone)]
 pub struct EmbeddingStatus {
     /// Whether the embedding system is initialized
+    #[allow(dead_code)] // Available for status checks
     pub initialized: bool,
     /// Model name in use
     pub model_name: String,

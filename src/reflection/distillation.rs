@@ -148,6 +148,7 @@ impl MemoryDistiller {
     }
 
     /// Identify patterns that should be demoted or removed
+    #[allow(dead_code)] // Reserved for future automated pattern pruning
     pub fn identify_demotions(conn: &Connection, threshold: f32) -> Result<Vec<i64>> {
         // Find patterns where harmful verdicts significantly outweigh effective ones
         let mut stmt = conn.prepare(
@@ -175,6 +176,7 @@ pub struct VerdictSummary {
     pub category: String,
     pub confidence: f32,
     pub root_cause: Option<String>,
+    #[allow(dead_code)] // Reserved for future use in detailed verdict display
     pub created_at: String,
 }
 
@@ -183,8 +185,10 @@ pub struct VerdictSummary {
 pub struct VerdictStats {
     pub total: i64,
     pub effective: i64,
+    #[allow(dead_code)] // Reserved for future use in expanded statistics display
     pub ineffective: i64,
     pub harmful: i64,
+    #[allow(dead_code)] // Reserved for future use in expanded statistics display
     pub neutral: i64,
     pub avg_confidence: f64,
 }

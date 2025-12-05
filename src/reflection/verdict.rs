@@ -32,6 +32,7 @@ impl VerdictCategory {
     }
 
     /// Parse from database string
+    #[allow(dead_code)] // Reserved for future verdict deserialization
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "EFFECTIVE" => Some(VerdictCategory::Effective),
@@ -43,6 +44,7 @@ impl VerdictCategory {
     }
 
     /// Get the score impact for this verdict category
+    #[allow(dead_code)] // Reserved for future direct category-based scoring
     pub fn score_impact(&self, confidence: f32, max_boost: i32, max_penalty: i32) -> i32 {
         let base = match self {
             VerdictCategory::Effective => max_boost,
@@ -117,6 +119,7 @@ impl Verdict {
     }
 
     /// Add a suggested improvement to the verdict
+    #[allow(dead_code)] // Reserved for future improvement suggestions
     pub fn with_suggestion(mut self, suggestion: String) -> Self {
         self.suggested_improvement = Some(suggestion);
         self
@@ -152,6 +155,7 @@ impl ReflectionVerdict {
     }
 
     /// Mark this verdict as a context mismatch
+    #[allow(dead_code)] // Reserved for future context mismatch tracking
     pub fn with_context_mismatch(mut self) -> Self {
         self.context_mismatch = true;
         self
