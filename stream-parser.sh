@@ -1,7 +1,7 @@
 #!/bin/bash
 # MANA Stream-JSON Parser
 # Converts Claude Code stream-json output to human-readable format
-# Version 2.0 - Full content display, no truncation
+# Version 3.0 - Handles all tool_use_result types (text, create, bash)
 
 # Colors
 RED='\033[0;31m'
@@ -98,15 +98,14 @@ while IFS= read -r line; do
 
         "user")
             # User messages - usually tool results
-            TOOL_RESULT=$(echo "$line" | jq -r '.message.content[0].type // empty' 2>/dev/null)
-            if [ "$TOOL_RESULT" = "tool_result" ]; then
+            TOOL_RESULT_TYPE=$(echo "$line" | jq -r '.message.content[0].type // empty' 2>/dev/null)
+            if [ "$TOOL_RESULT_TYPE" = "tool_result" ]; then
                 TOOL_ID=$(echo "$line" | jq -r '.message.content[0].tool_use_id // empty' 2>/dev/null)
                 IS_ERROR=$(echo "$line" | jq -r '.message.content[0].is_error // false' 2>/dev/null)
                 CONTENT=$(echo "$line" | jq -r '.message.content[0].content // empty' 2>/dev/null)
 
-                # Also check tool_use_result for stdout
-                STDOUT=$(echo "$line" | jq -r '.tool_use_result.stdout // empty' 2>/dev/null)
-                STDERR=$(echo "$line" | jq -r '.tool_use_result.stderr // empty' 2>/dev/null)
+                # Check tool_use_result type (text for Read, create for Write, or stdout for Bash)
+                RESULT_TYPE=$(echo "$line" | jq -r '.tool_use_result.type // empty' 2>/dev/null)
 
                 if [ "$IS_ERROR" = "true" ]; then
                     echo -e "${RED}${BOLD}✗ Error:${NC}"
@@ -115,12 +114,45 @@ while IFS= read -r line; do
                         echo -e "${RED}│ $result_line${NC}"
                     done
                     echo -e "${RED}└─────────────────────────────────────────────────${NC}"
+                elif [ "$RESULT_TYPE" = "text" ]; then
+                    # Read tool result - show file content
+                    FILE_PATH=$(echo "$line" | jq -r '.tool_use_result.file.filePath // empty' 2>/dev/null)
+                    FILE_CONTENT=$(echo "$line" | jq -r '.tool_use_result.file.content // empty' 2>/dev/null)
+                    NUM_LINES=$(echo "$line" | jq -r '.tool_use_result.file.numLines // empty' 2>/dev/null)
+                    START_LINE=$(echo "$line" | jq -r '.tool_use_result.file.startLine // 1' 2>/dev/null)
+
+                    echo -e "${GREEN}${BOLD}✓ Read: ${FILE_PATH}${NC}"
+                    echo -e "${GRAY}┌─ File Content (${NUM_LINES} lines from line ${START_LINE}) ─────${NC}"
+                    echo "$FILE_CONTENT" | while IFS= read -r file_line; do
+                        echo -e "${GRAY}│ $file_line${NC}"
+                    done
+                    echo -e "${GRAY}└─────────────────────────────────────────────────${NC}"
+                elif [ "$RESULT_TYPE" = "create" ]; then
+                    # Write tool result - show created file
+                    FILE_PATH=$(echo "$line" | jq -r '.tool_use_result.filePath // empty' 2>/dev/null)
+                    FILE_CONTENT=$(echo "$line" | jq -r '.tool_use_result.content // empty' 2>/dev/null)
+                    LINE_COUNT=$(echo "$FILE_CONTENT" | wc -l)
+
+                    echo -e "${GREEN}${BOLD}✓ Created: ${FILE_PATH}${NC}"
+                    echo -e "${GRAY}┌─ File Content (${LINE_COUNT} lines) ───────────────────${NC}"
+                    echo "$FILE_CONTENT" | while IFS= read -r file_line; do
+                        echo -e "${GRAY}│ $file_line${NC}"
+                    done
+                    echo -e "${GRAY}└─────────────────────────────────────────────────${NC}"
+                elif [ "$RESULT_TYPE" = "edit" ] || [ "$RESULT_TYPE" = "replace" ]; then
+                    # Edit tool result
+                    FILE_PATH=$(echo "$line" | jq -r '.tool_use_result.filePath // empty' 2>/dev/null)
+                    echo -e "${GREEN}${BOLD}✓ Edited: ${FILE_PATH}${NC}"
+                    echo -e "${GRAY}  $CONTENT${NC}"
                 else
-                    echo -e "${GREEN}${BOLD}✓ Result:${NC}"
+                    # Bash result or other - use stdout/content
+                    STDOUT=$(echo "$line" | jq -r '.tool_use_result.stdout // empty' 2>/dev/null)
+                    STDERR=$(echo "$line" | jq -r '.tool_use_result.stderr // empty' 2>/dev/null)
 
                     # Use STDOUT if available, otherwise use CONTENT
                     OUTPUT="${STDOUT:-$CONTENT}"
 
+                    echo -e "${GREEN}${BOLD}✓ Result:${NC}"
                     if [ -n "$OUTPUT" ]; then
                         LINE_COUNT=$(echo "$OUTPUT" | wc -l)
                         echo -e "${GRAY}┌─ Output ($LINE_COUNT lines) ───────────────────────────${NC}"

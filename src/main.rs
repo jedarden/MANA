@@ -1,0 +1,100 @@
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use tracing::info;
+use tracing_subscriber::EnvFilter;
+
+mod hooks;
+mod learning;
+mod storage;
+
+/// MANA - Memory-Augmented Neural Assistant
+/// High-performance learning system for Claude Code context injection
+#[derive(Parser)]
+#[command(name = "mana")]
+#[command(author = "MANA Autonomous Agent")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(about = "Memory-Augmented Neural Assistant for Claude Code", long_about = None)]
+struct Cli {
+    /// Enable verbose logging
+    #[arg(short, long)]
+    verbose: bool,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Inject context from ReasoningBank (pre-hook)
+    Inject {
+        /// Tool type: edit, bash, task
+        #[arg(long)]
+        tool: String,
+    },
+
+    /// Process session end and trigger learning if threshold met
+    SessionEnd,
+
+    /// Run consolidation tasks manually
+    Consolidate,
+
+    /// Show current status and statistics
+    Status,
+
+    /// Show detailed statistics
+    Stats,
+
+    /// Initialize MANA configuration
+    Init,
+
+    /// Check for updates and self-update if available
+    Update,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Initialize logging
+    let filter = if cli.verbose {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"))
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    };
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+
+    match cli.command {
+        Commands::Inject { tool } => {
+            info!("Injecting context for tool: {}", tool);
+            hooks::inject_context(&tool).await?;
+        }
+        Commands::SessionEnd => {
+            info!("Processing session end");
+            hooks::session_end().await?;
+        }
+        Commands::Consolidate => {
+            info!("Running consolidation");
+            learning::consolidate().await?;
+        }
+        Commands::Status => {
+            storage::show_status().await?;
+        }
+        Commands::Stats => {
+            storage::show_stats().await?;
+        }
+        Commands::Init => {
+            info!("Initializing MANA");
+            storage::init().await?;
+        }
+        Commands::Update => {
+            info!("Checking for updates");
+            println!("Update functionality not yet implemented");
+        }
+    }
+
+    Ok(())
+}

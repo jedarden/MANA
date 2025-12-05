@@ -1,0 +1,51 @@
+[package]
+name = "mana"
+version = "0.1.0"
+edition = "2021"
+authors = ["MANA Autonomous Agent"]
+description = "Memory-Augmented Neural Assistant - High-performance learning system for Claude Code"
+license = "MIT"
+repository = "https://github.com/jedarden/MANA"
+keywords = ["ai", "learning", "claude", "context-injection"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "mana"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# File system utilities
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
