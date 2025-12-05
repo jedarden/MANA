@@ -1,9 +1,9 @@
-enabled = true
+enabled = false
 interval_minutes = 60
 
 [backend]
 type = "Git"
-remote = "/tmp/.tmpPgyVCo/test-sync-repo"
+remote = ""
 branch = "main"
 
 [security]
