@@ -1,1 +1,14 @@
 /target
+
+# MANA runtime files
+.mana/mana
+.mana/metadata.sqlite
+.mana/learning-state.json
+.mana/logs/
+
+# Claude Flow runtime
+.claude-flow/
+.swarm/
+
+# Development files
+initial-prompt.md

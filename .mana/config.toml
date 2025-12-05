@@ -1,0 +1,19 @@
+# MANA Configuration
+
+[learning]
+# Trajectory threshold before triggering learning
+threshold = 15
+# Maximum patterns to inject per context
+max_patterns_per_context = 5
+
+[performance]
+# Maximum time for context injection in milliseconds
+injection_timeout_ms = 10
+# Maximum time for pattern search in milliseconds
+search_timeout_ms = 5
+
+[storage]
+# Maximum number of patterns to keep
+max_patterns = 10000
+# Decay factor for unused patterns (0-1)
+decay_factor = 0.95
