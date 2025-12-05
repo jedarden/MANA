@@ -9,7 +9,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::trajectory::{parse_trajectories, Trajectory};
 use super::LearningResult;
@@ -115,7 +115,8 @@ fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     let mut patterns = Vec::new();
 
     // Build a map of tool_use_id -> error status from results
-    let error_tool_ids: std::collections::HashSet<String> = trajectory.tool_results
+    // Currently not filtering by this, as we extract all successful tool patterns
+    let _error_tool_ids: std::collections::HashSet<String> = trajectory.tool_results
         .iter()
         .filter(|r| r.is_error ||
                 r.content.to_lowercase().contains("error:") ||
@@ -166,6 +167,7 @@ fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
 }
 
 /// Extract patterns from successful trajectories
+#[allow(dead_code)]
 fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     let mut patterns = Vec::new();
 

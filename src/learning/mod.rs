@@ -11,7 +11,9 @@ pub mod trajectory;
 
 pub use foreground::foreground_learn;
 pub use consolidation::{consolidate, spawn_consolidation};
-pub use trajectory::{Trajectory, ToolCall, ToolResult, Verdict, parse_trajectories};
+// Trajectory types are internal to foreground learning - only expose what's needed
+#[allow(unused_imports)]
+pub(crate) use trajectory::parse_trajectories;
 
 /// Result of a foreground learning cycle
 #[derive(Debug, Default, Serialize, Deserialize)]

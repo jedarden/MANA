@@ -15,6 +15,7 @@ use crate::storage::{PatternStore, Pattern, calculate_similarity};
 /// Top-level hook input structure from Claude Code
 #[derive(Debug, Deserialize)]
 struct HookInput {
+    #[allow(dead_code)]
     tool_name: Option<String>,
     /// Claude Code uses "input" as the nested key
     input: Option<ToolInputFields>,
@@ -32,7 +33,9 @@ struct ToolInputFields {
     command: Option<String>,
     subagent_type: Option<String>,
     description: Option<String>,
+    #[allow(dead_code)]
     content: Option<String>,
+    #[allow(dead_code)]
     prompt: Option<String>,
 }
 
@@ -69,12 +72,20 @@ pub async fn inject_context(tool: &str) -> Result<()> {
     let start = Instant::now();
     debug!("Injecting context for tool: {}", tool);
 
-    // Read input from stdin
+    // Read input from stdin - collect lines until EOF or error
+    // Using take_while to avoid potential infinite loop on persistent read errors
     let stdin = io::stdin();
-    let input: String = stdin.lock().lines()
-        .filter_map(|line| line.ok())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut lines = Vec::new();
+    for line_result in stdin.lock().lines() {
+        match line_result {
+            Ok(line) => lines.push(line),
+            Err(e) => {
+                warn!("Error reading stdin: {}", e);
+                break;
+            }
+        }
+    }
+    let input: String = lines.join("\n");
     let stdin_time = start.elapsed().as_micros();
 
     if input.is_empty() {

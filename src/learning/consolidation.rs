@@ -12,7 +12,7 @@ use std::process::Command;
 use rusqlite::{Connection, params};
 use tracing::{debug, info, warn};
 
-use crate::storage::{PatternStore, Pattern, calculate_similarity};
+use crate::storage::calculate_similarity;
 
 /// Run consolidation tasks manually
 pub async fn consolidate() -> Result<()> {

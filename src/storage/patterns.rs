@@ -45,6 +45,7 @@ impl PatternStore {
     }
 
     /// Open pattern store with write optimizations (for learning/consolidation)
+    #[allow(dead_code)]
     pub fn open_write(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)?;
 
@@ -136,6 +137,7 @@ impl PatternStore {
     }
 
     /// Update pattern success/failure counts
+    #[allow(dead_code)]
     pub fn update_outcome(&self, pattern_id: i64, success: bool) -> Result<()> {
         let column = if success { "success_count" } else { "failure_count" };
 
@@ -151,6 +153,7 @@ impl PatternStore {
     }
 
     /// Get pattern by ID
+    #[allow(dead_code)]
     pub fn get_by_id(&self, id: i64) -> Result<Option<Pattern>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -184,6 +187,7 @@ impl PatternStore {
     }
 
     /// Decay unused patterns (reduce success_count)
+    #[allow(dead_code)]
     pub fn decay_unused(&self, decay_factor: f64, days_threshold: i64) -> Result<u64> {
         let changes = self.conn.execute(
             r#"

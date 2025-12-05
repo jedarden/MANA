@@ -6,13 +6,13 @@
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
-use tracing::{debug, info};
+use tracing::info;
 
 pub mod patterns;
 pub mod similarity;
 
 pub use patterns::{PatternStore, Pattern};
-pub use similarity::{calculate_similarity, rank_patterns};
+pub use similarity::calculate_similarity;
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {

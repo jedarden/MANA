@@ -241,6 +241,7 @@ fn is_stopword(term: &str) -> bool {
 }
 
 /// Rank patterns by similarity to query
+#[allow(dead_code)]
 pub fn rank_patterns<T: AsRef<str>>(query: &str, patterns: &[(T, T)]) -> Vec<(usize, f64)> {
     let mut scores: Vec<(usize, f64)> = patterns
         .iter()
