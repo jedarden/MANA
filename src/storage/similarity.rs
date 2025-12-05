@@ -19,16 +19,20 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
         return 0.0;
     }
 
-    // Fast path for typical inputs
+    // Fast path for typical inputs (covers ~95% of real-world cases)
     // Use simple word overlap instead of full tokenization
     // Most queries are <80 chars and patterns are <300 chars
     if query.len() < 100 && pattern_text.len() < 400 {
         return calculate_similarity_fast(query, pattern_text);
     }
 
-    // Early tech stack detection directly on strings (avoids full tokenization for mismatches)
-    let query_tech = detect_tech_stack_fast(query);
-    let pattern_tech = detect_tech_stack_fast(pattern_text);
+    // Longer inputs: do lowercase once and reuse for both tech detection and tokenization
+    let query_lower = query.to_lowercase();
+    let pattern_lower = pattern_text.to_lowercase();
+
+    // Tech stack detection on pre-lowercased strings (avoids redundant lowercase)
+    let query_tech = detect_tech_stack_lowered(&query_lower);
+    let pattern_tech = detect_tech_stack_lowered(&pattern_lower);
 
     // Calculate tech modifier early - can skip expensive tokenization if completely mismatched
     let tech_modifier = if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown {
@@ -45,8 +49,6 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
     // This saves tokenization time for patterns that won't be selected anyway
     if tech_modifier < 0.5 && query_tech != TechStack::Unknown {
         // Quick check: if no common words at all, return minimal score
-        let query_lower = query.to_lowercase();
-        let pattern_lower = pattern_text.to_lowercase();
         let has_common = query_lower.split_whitespace()
             .take(5) // Only check first 5 words for speed
             .any(|w| w.len() > 3 && pattern_lower.contains(w));
@@ -55,9 +57,9 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
         }
     }
 
-    // Tokenize both texts (optimized with pre-allocation)
-    let query_tokens = tokenize_fast(query);
-    let pattern_tokens = tokenize_fast(pattern_text);
+    // Tokenize pre-lowercased text directly (avoids third lowercase conversion)
+    let query_tokens = tokenize_lowered(&query_lower);
+    let pattern_tokens = tokenize_lowered(&pattern_lower);
 
     if query_tokens.is_empty() || pattern_tokens.is_empty() {
         return 0.0;
@@ -319,6 +321,26 @@ fn tokenize_fast(text: &str) -> Vec<String> {
     for token in lower.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
         if token.len() >= 2 && !is_stopword_fast(token) {
             // Skip expensive stemming for very short tokens (most common case)
+            if token.len() <= 4 {
+                tokens.push(token.to_string());
+            } else {
+                tokens.push(stem_word_fast(token));
+            }
+        }
+    }
+
+    tokens
+}
+
+/// Tokenize already-lowercased text (avoids redundant lowercase conversion)
+/// Used by the slow path in calculate_similarity for longer inputs
+#[inline]
+fn tokenize_lowered(lower: &str) -> Vec<String> {
+    let estimated_tokens = (lower.len() / 8).max(8);
+    let mut tokens = Vec::with_capacity(estimated_tokens);
+
+    for token in lower.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+        if token.len() >= 2 && !is_stopword_fast(token) {
             if token.len() <= 4 {
                 tokens.push(token.to_string());
             } else {

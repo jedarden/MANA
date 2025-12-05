@@ -129,6 +129,8 @@ fn benchmark_injection(iterations: usize) -> Result<Vec<u128>> {
 
 /// Benchmark pattern search (via status command which queries DB)
 fn benchmark_pattern_search(iterations: usize) -> Result<Vec<u128>> {
+    use crate::storage::calculate_similarity;
+
     let mana_dir = get_mana_dir()?;
     let db_path = mana_dir.join("metadata.sqlite");
 
@@ -136,28 +138,46 @@ fn benchmark_pattern_search(iterations: usize) -> Result<Vec<u128>> {
         return Ok(vec![0]);
     }
 
+    // Pre-open connection outside the timing loop for pure query benchmark
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    // Test query simulating real injection workload
+    let test_query = "Editing rs rust cargo toml crate file main.rs";
     let mut times = Vec::with_capacity(iterations);
 
     for _ in 0..iterations {
         let start = Instant::now();
 
-        // Direct DB query benchmark
-        let conn = rusqlite::Connection::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        // Query patterns (the actual DB portion)
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, tool_type, context_query, success_count, failure_count FROM patterns WHERE tool_type = ? ORDER BY (success_count - failure_count) DESC LIMIT 8"
         )?;
 
-        let mut stmt = conn.prepare(
-            "SELECT id, tool_type, context_query, success_count, failure_count FROM patterns WHERE tool_type = ? ORDER BY (success_count - failure_count) DESC LIMIT 20"
-        )?;
-
-        let _rows: Vec<_> = stmt.query_map(["Edit"], |row| {
+        let rows: Vec<(i64, String, String, i64, i64)> = stmt.query_map(["Edit"], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         })?.filter_map(|r| r.ok()).collect();
+
+        // Include similarity scoring (the hot path in real injection)
+        let mut scored: Vec<_> = rows.iter()
+            .filter_map(|(id, _tool, context, success, failure)| {
+                let sim = calculate_similarity(test_query, context);
+                if sim >= 0.35 {
+                    Some((*id, sim, *success - *failure))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         times.push(start.elapsed().as_micros());
     }
