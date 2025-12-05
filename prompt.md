@@ -85,6 +85,17 @@ fn sanitize_pattern(p: &Pattern) -> Pattern {
 ### 4.3 New CLI Commands
 
 ```bash
+# Embedding management
+mana embed status                 # Show embedding coverage and model info
+mana embed rebuild                # Re-generate all embeddings (after model update)
+mana embed search "query text"    # Test semantic search
+
+# Reflection commands
+mana reflect                      # Run reflection cycle manually
+mana reflect status               # Show reflection queue and last cycle stats
+mana reflect verdicts             # List recent verdicts
+mana reflect analyze <pattern-id> # Deep-dive analysis of specific pattern
+
 # Sync management
 mana sync init --backend <s3|git|postgres|p2p>
 mana sync push                    # Upload local patterns (encrypted)
@@ -113,7 +124,44 @@ mana team list                    # List team patterns
 ### 4.4 Configuration
 
 ```toml
-# ~/.mana/sync.toml
+# ~/.mana/config.toml (updated with embeddings and reflection)
+
+[learning]
+threshold = 15                      # Trajectory threshold before triggering learning
+max_patterns_per_context = 5        # Maximum patterns to inject per context
+
+[embeddings]
+enabled = true
+model = "gte-small"                 # gte-small | gte-base | all-MiniLM-L6-v2
+dimensions = 384                    # Auto-set based on model
+batch_size = 32                     # Batch size for embedding generation
+cache_embeddings = true             # Cache in embeddings.bin for fast startup
+
+[reflection]
+enabled = true
+# Data-driven trigger
+data_threshold = 50                 # Min trajectories to trigger reflection
+# Time-driven trigger
+time_interval_hours = 4             # Hours between scheduled reflections
+# Verdict settings
+min_confidence = 0.6                # Minimum confidence to act on verdict
+max_penalty = -5                    # Maximum penalty for HARMFUL verdicts
+max_boost = 5                       # Maximum boost for EFFECTIVE verdicts
+# Root cause analysis
+analyze_failures = true             # Enable failure root cause analysis
+suggest_improvements = true         # Generate improvement suggestions
+
+[performance]
+injection_timeout_ms = 10           # Maximum time for context injection
+search_timeout_ms = 5               # Maximum time for pattern search
+
+[storage]
+max_patterns = 10000
+decay_factor = 0.95
+```
+
+```toml
+# ~/.mana/sync.toml (separate sync configuration)
 [sync]
 enabled = true
 backend = "s3"              # s3 | git | postgres | p2p
@@ -253,6 +301,31 @@ mana sync init --backend p2p \
 
 ### 4.7 Implementation Checklist
 
+**Embeddings (Priority 1):**
+- [ ] Add `src/embeddings/mod.rs` module
+- [ ] Integrate gte-small model via candle
+- [ ] Add embedding column to patterns table (schema migration)
+- [ ] Generate embeddings for new patterns on insert
+- [ ] Background job to embed existing patterns
+- [ ] Build HNSW index with usearch
+- [ ] Replace string similarity with vector cosine similarity
+- [ ] Add `mana embed` CLI commands
+- [ ] Benchmark: ensure <5ms search latency
+
+**Reflection (Priority 2):**
+- [ ] Add `src/reflection/mod.rs` module
+- [ ] Create reflection_verdicts and reflection_log tables
+- [ ] Implement trajectory outcome analysis
+- [ ] Build verdict judgment logic (EFFECTIVE/NEUTRAL/INEFFECTIVE/HARMFUL)
+- [ ] Add root cause analysis for failures
+- [ ] Implement memory distillation (pattern updates from verdicts)
+- [ ] Add data-driven trigger (≥50 trajectories)
+- [ ] Add time-driven trigger (every 4 hours)
+- [ ] Integrate reflection into daemon loop
+- [ ] Add `mana reflect` CLI commands
+- [ ] Write verdict heuristics tests
+
+**Sync (Priority 3):**
 - [ ] Add `src/sync/mod.rs` module
 - [ ] Implement pattern sanitization
 - [ ] Add AES-256-GCM encryption
@@ -499,9 +572,343 @@ src/
 │   ├── patterns.rs            # usearch + SQLite
 │   ├── skills.rs              # Skill consolidation
 │   └── causal.rs              # Causal edge tracking
-└── embeddings/
+├── embeddings/
+│   ├── mod.rs
+│   └── model.rs               # Local gte-small model
+└── reflection/
     ├── mod.rs
-    └── model.rs               # Local gte-small model
+    ├── verdict.rs             # Verdict judgment logic
+    ├── trajectory_analyzer.rs # Trajectory success analysis
+    └── distillation.rs        # Memory distillation
+```
+
+---
+
+## Embeddings Architecture
+
+MANA uses vector embeddings for semantic similarity matching, replacing basic string comparison.
+
+### Why Embeddings?
+
+| Approach | Limitation |
+|----------|------------|
+| String matching | "fix bug" ≠ "resolve issue" (0% similarity) |
+| Vector similarity | "fix bug" ≈ "resolve issue" (>85% similarity) |
+
+Embeddings enable MANA to recognize semantically similar patterns even when lexically different.
+
+### Embedding Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Embedding Pipeline                           │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
+│  │   Pattern    │───▶│  Tokenizer   │───▶│  gte-small   │      │
+│  │   Context    │    │ (128 tokens) │    │  (384 dims)  │      │
+│  └──────────────┘    └──────────────┘    └──────┬───────┘      │
+│                                                  │               │
+│                                                  ▼               │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
+│  │   Top-K      │◀───│  HNSW Index  │◀───│  Normalize   │      │
+│  │   Results    │    │  (usearch)   │    │  (L2 norm)   │      │
+│  └──────────────┘    └──────────────┘    └──────────────┘      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Database Schema Updates
+
+```sql
+-- Add embedding support to patterns table
+ALTER TABLE patterns ADD COLUMN embedding BLOB;           -- 384 x f32 = 1536 bytes
+ALTER TABLE patterns ADD COLUMN embedding_version INTEGER DEFAULT 1;
+
+-- Embedding metadata table for model tracking
+CREATE TABLE embedding_meta (
+    id INTEGER PRIMARY KEY,
+    model_name TEXT NOT NULL,           -- 'gte-small'
+    model_version TEXT NOT NULL,        -- 'v1.0'
+    dimensions INTEGER NOT NULL,        -- 384
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for embedding version queries (for re-embedding on model update)
+CREATE INDEX idx_patterns_embedding_version ON patterns(embedding_version);
+```
+
+### Embedding Model Options
+
+| Model | Dimensions | Speed | Quality | Memory |
+|-------|------------|-------|---------|--------|
+| gte-small (default) | 384 | Fast | Good | ~33MB |
+| gte-base | 768 | Medium | Better | ~110MB |
+| all-MiniLM-L6-v2 | 384 | Fast | Good | ~23MB |
+| nomic-embed-text | 768 | Medium | Better | ~137MB |
+
+### Implementation
+
+```rust
+// src/embeddings/mod.rs
+pub struct EmbeddingModel {
+    tokenizer: Tokenizer,
+    model: BertModel,
+    dimensions: usize,
+}
+
+impl EmbeddingModel {
+    /// Generate embedding for text
+    pub fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let tokens = self.tokenizer.encode(text, true)?;
+        let input_ids = Tensor::new(&tokens.get_ids()[..128], &Device::Cpu)?;
+
+        let embeddings = self.model.forward(&input_ids)?;
+        let pooled = mean_pooling(&embeddings)?;
+
+        Ok(normalize_l2(pooled))
+    }
+
+    /// Batch embed for efficiency
+    pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        // Process in batches of 32 for memory efficiency
+        texts.chunks(32)
+            .flat_map(|batch| self.embed_batch_internal(batch))
+            .collect()
+    }
+}
+
+// Similarity search using HNSW
+pub fn find_similar(query_embedding: &[f32], k: usize) -> Vec<(i64, f32)> {
+    let index = usearch::Index::load("vectors.usearch")?;
+    index.search(query_embedding, k)
+        .iter()
+        .map(|m| (m.key as i64, 1.0 - m.distance))  // Convert distance to similarity
+        .collect()
+}
+```
+
+### Migration Path
+
+1. **Phase 1**: Add embedding column, generate embeddings for new patterns
+2. **Phase 2**: Background job to embed existing patterns
+3. **Phase 3**: Switch similarity search from string to vector
+4. **Phase 4**: Remove string-based fallback
+
+---
+
+## Reflection Architecture
+
+Reflection enables MANA to learn *why* patterns succeed or fail, not just *that* they did.
+
+### Reflection Triggers
+
+Reflection runs on two complementary schedules:
+
+| Trigger | Condition | Purpose |
+|---------|-----------|---------|
+| **Data-driven** | ≥50 new trajectories | Learn from accumulated evidence |
+| **Time-driven** | Every 4 hours | Catch edge cases, ensure freshness |
+| **Manual** | `mana reflect` | On-demand analysis |
+
+### Reflection Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Reflection Pipeline                          │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │              1. Trajectory Collection                       │ │
+│  │   Gather completed trajectories since last reflection      │ │
+│  │   Group by: session, tool_type, outcome (success/failure)  │ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │              2. Verdict Judgment                            │ │
+│  │   For each trajectory group:                                │ │
+│  │   - Analyze what actions were taken                        │ │
+│  │   - Identify success/failure indicators                    │ │
+│  │   - Score: EFFECTIVE | INEFFECTIVE | NEUTRAL | HARMFUL    │ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │              3. Root Cause Analysis                         │ │
+│  │   For failures:                                             │ │
+│  │   - What went wrong? (error type, context mismatch, etc)   │ │
+│  │   - Was the pattern wrong or the context?                  │ │
+│  │   - What would have worked better?                         │ │
+│  └──────────────────────────┬─────────────────────────────────┘ │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │              4. Memory Distillation                         │ │
+│  │   Extract learnings into actionable updates:               │ │
+│  │   - Boost effective patterns                               │ │
+│  │   - Penalize or refine ineffective patterns               │ │
+│  │   - Create new patterns from successful variations        │ │
+│  │   - Update causal edges with new evidence                 │ │
+│  └────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Verdict Schema
+
+```sql
+-- Store reflection verdicts
+CREATE TABLE reflection_verdicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trajectory_hash TEXT NOT NULL,           -- Hash of trajectory for deduplication
+    pattern_id INTEGER,                      -- Related pattern (if any)
+    verdict TEXT NOT NULL,                   -- EFFECTIVE | INEFFECTIVE | NEUTRAL | HARMFUL
+    confidence REAL NOT NULL,                -- 0.0 - 1.0
+    root_cause TEXT,                         -- Why it failed (for failures)
+    suggested_improvement TEXT,              -- What would work better
+    context_mismatch BOOLEAN DEFAULT FALSE,  -- Was it a context problem?
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pattern_id) REFERENCES patterns(id) ON DELETE SET NULL
+);
+
+-- Track reflection cycles
+CREATE TABLE reflection_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trigger_type TEXT NOT NULL,              -- data_driven | time_driven | manual
+    trajectories_analyzed INTEGER NOT NULL,
+    verdicts_created INTEGER NOT NULL,
+    patterns_updated INTEGER NOT NULL,
+    patterns_created INTEGER NOT NULL,
+    patterns_demoted INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_verdicts_pattern ON reflection_verdicts(pattern_id);
+CREATE INDEX idx_verdicts_verdict ON reflection_verdicts(verdict);
+```
+
+### Verdict Categories
+
+| Verdict | Score Impact | Description |
+|---------|--------------|-------------|
+| **EFFECTIVE** | +2 to +5 | Pattern directly contributed to success |
+| **NEUTRAL** | 0 | Pattern neither helped nor hurt |
+| **INEFFECTIVE** | -1 to -2 | Pattern didn't help, minor negative signal |
+| **HARMFUL** | -3 to -5 | Pattern caused errors or wasted effort |
+
+### Reflection Implementation
+
+```rust
+// src/reflection/verdict.rs
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    Effective { confidence: f32, boost: i32 },
+    Neutral,
+    Ineffective { confidence: f32, penalty: i32 },
+    Harmful { confidence: f32, penalty: i32, root_cause: String },
+}
+
+pub struct ReflectionEngine {
+    embedding_model: EmbeddingModel,
+    verdict_threshold: f32,  // Minimum confidence to act
+}
+
+impl ReflectionEngine {
+    /// Analyze a batch of trajectories and produce verdicts
+    pub async fn reflect(&self, trajectories: &[Trajectory]) -> Result<Vec<ReflectionVerdict>> {
+        let mut verdicts = Vec::new();
+
+        for trajectory in trajectories {
+            // 1. Extract outcome
+            let outcome = self.analyze_outcome(trajectory)?;
+
+            // 2. Find patterns that were active during this trajectory
+            let active_patterns = self.find_active_patterns(trajectory)?;
+
+            // 3. Judge each pattern's contribution
+            for pattern in active_patterns {
+                let verdict = self.judge_contribution(&pattern, &outcome, trajectory)?;
+
+                if verdict.confidence >= self.verdict_threshold {
+                    verdicts.push(verdict);
+                }
+            }
+
+            // 4. Look for missed opportunities (patterns that SHOULD have been suggested)
+            if outcome.is_failure() {
+                if let Some(better_pattern) = self.find_better_pattern(trajectory)? {
+                    verdicts.push(ReflectionVerdict::missed_opportunity(better_pattern));
+                }
+            }
+        }
+
+        Ok(verdicts)
+    }
+
+    /// Analyze trajectory outcome
+    fn analyze_outcome(&self, trajectory: &Trajectory) -> Result<TrajectoryOutcome> {
+        // Look for success/failure signals:
+        // - Tool execution success/failure
+        // - Error messages in output
+        // - User satisfaction signals (retries, abandonment)
+        // - Task completion indicators
+
+        let has_errors = trajectory.events.iter()
+            .any(|e| e.contains_error_signal());
+
+        let retry_count = trajectory.count_retries();
+        let abandoned = trajectory.was_abandoned();
+
+        Ok(TrajectoryOutcome {
+            success: !has_errors && !abandoned,
+            retry_count,
+            error_types: trajectory.extract_error_types(),
+            duration_ms: trajectory.duration_ms(),
+        })
+    }
+}
+```
+
+### Daemon Integration
+
+Update the daemon to include reflection cycles:
+
+```bash
+# Environment variables for reflection tuning
+MANA_REFLECT_DATA_THRESHOLD=50    # Trajectories to trigger data-driven reflection
+MANA_REFLECT_TIME_INTERVAL=14400  # Seconds between time-driven reflection (4 hours)
+MANA_REFLECT_ENABLED=true         # Enable/disable reflection
+```
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MANA Daemon (Updated)                        │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │              Learning Layer (Every 5 min)               │   │
+│  │   - Parse JSONL trajectories from all sessions         │   │
+│  │   - Extract success/failure patterns                   │   │
+│  │   - Generate embeddings for new patterns               │   │
+│  │   - Update ReasoningBank (patterns table)              │   │
+│  │   - Queue trajectories for reflection                  │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │              Reflection Layer (Data + Time triggered)   │   │
+│  │   Triggers:                                             │   │
+│  │   - ≥50 new trajectories queued (data-driven)          │   │
+│  │   - 4 hours since last reflection (time-driven)        │   │
+│  │   Actions:                                              │   │
+│  │   - Analyze trajectory outcomes                        │   │
+│  │   - Judge pattern effectiveness                        │   │
+│  │   - Identify root causes for failures                  │   │
+│  │   - Distill learnings into pattern updates             │   │
+│  │   - Create new patterns from successful variations     │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │              Consolidation Layer (Every 1 hour)         │   │
+│  │   - Merge similar patterns (using embedding similarity) │   │
+│  │   - Decay unused patterns (not used in 7+ days)        │   │
+│  │   - Prune low-quality patterns (score < -3)            │   │
+│  │   - Build skills from pattern clusters                 │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Dependencies
@@ -529,11 +936,14 @@ tracing-subscriber = "0.3"
 .mana/
 ├── mana                    # Binary
 ├── config.toml             # Configuration
-├── metadata.sqlite         # Pattern metadata
-├── vectors.usearch         # HNSW index
+├── metadata.sqlite         # Pattern metadata + reflection verdicts
+├── vectors.usearch         # HNSW index for embeddings
+├── embeddings.bin          # Cached embedding vectors
 ├── learning-state.json     # Accumulator state
+├── reflection-state.json   # Reflection queue and pending analyses
 └── logs/
-    └── learning.jsonl      # Learning cycle log
+    ├── learning.jsonl      # Learning cycle log
+    └── reflection.jsonl    # Reflection verdicts and insights
 ```
 
 ### Hook Configuration
@@ -593,12 +1003,21 @@ MANA supports two learning modes:
 
 ```bash
 # Environment variables for daemon tuning
-MANA_LEARN_INTERVAL=300          # Seconds between learning runs (default: 5 min)
-MANA_CONSOLIDATE_INTERVAL=3600   # Seconds between consolidation (default: 1 hour)
-MANA_LOG_DIR=~/.mana/logs        # Daemon log directory
+MANA_LEARN_INTERVAL=300              # Seconds between learning runs (default: 5 min)
+MANA_CONSOLIDATE_INTERVAL=3600       # Seconds between consolidation (default: 1 hour)
+MANA_LOG_DIR=~/.mana/logs            # Daemon log directory
+
+# Reflection settings
+MANA_REFLECT_ENABLED=true            # Enable/disable reflection
+MANA_REFLECT_DATA_THRESHOLD=50       # Trajectories to trigger data-driven reflection
+MANA_REFLECT_TIME_INTERVAL=14400     # Seconds between time-driven reflection (4 hours)
+
+# Embedding settings
+MANA_EMBED_ENABLED=true              # Enable/disable embeddings
+MANA_EMBED_MODEL=gte-small           # Embedding model to use
 ```
 
-#### Architecture: Two-Tier Learning
+#### Architecture: Three-Tier Learning
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -613,7 +1032,7 @@ MANA_LOG_DIR=~/.mana/logs        # Daemon log directory
 │  │              Pre-Hooks (Injection Layer)                │  │
 │  │   mana inject --tool edit/bash/read                     │  │
 │  │   Budget: <10ms per hook invocation                     │  │
-│  │   Returns: Top relevant patterns from ReasoningBank     │  │
+│  │   Returns: Top relevant patterns (via embedding search) │  │
 │  └─────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -622,15 +1041,28 @@ MANA_LOG_DIR=~/.mana/logs        # Daemon log directory
 ┌─────────────────────────────────────────────────────────────────┐
 │                     MANA Daemon (Background)                    │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │              Learning Layer (Every 5 min)               │  │
+│  │         Tier 1: Learning Layer (Every 5 min)            │  │
 │  │   - Parse JSONL trajectories from all sessions         │  │
 │  │   - Extract success/failure patterns                   │  │
+│  │   - Generate embeddings for new patterns               │  │
 │  │   - Update ReasoningBank (patterns table)              │  │
-│  │   - Discover causal edges between patterns             │  │
+│  │   - Queue trajectories for reflection                  │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │              Consolidation Layer (Every 1 hour)         │  │
-│  │   - Merge similar patterns (>90% similarity)           │  │
+│  │    Tier 2: Reflection Layer (Data + Time triggered)     │  │
+│  │   Triggers:                                             │  │
+│  │   - Data-driven: ≥50 trajectories accumulated          │  │
+│  │   - Time-driven: Every 4 hours (catch edge cases)      │  │
+│  │   Actions:                                              │  │
+│  │   - Analyze trajectory outcomes (success/failure)      │  │
+│  │   - Judge pattern effectiveness → verdicts             │  │
+│  │   - Root cause analysis for failures                   │  │
+│  │   - Distill learnings → pattern score updates          │  │
+│  │   - Generate improvement suggestions                   │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │       Tier 3: Consolidation Layer (Every 1 hour)        │  │
+│  │   - Merge similar patterns (>90% embedding similarity) │  │
 │  │   - Decay unused patterns (not used in 7+ days)        │  │
 │  │   - Prune low-quality patterns (score < -3)            │  │
 │  │   - Build skills from pattern clusters                 │  │
@@ -642,11 +1074,16 @@ MANA_LOG_DIR=~/.mana/logs        # Daemon log directory
 │                     ReasoningBank (Storage)                     │
 │  ┌────────────────────┐  ┌────────────────────────────────┐   │
 │  │  metadata.sqlite   │  │    patterns table              │   │
-│  │  - patterns table  │  │    - tool_type (Edit/Bash/...) │   │
-│  │  - skills table    │  │    - command_category (rs/npm) │   │
-│  │  - causal_edges    │  │    - context_query (task/appr) │   │
-│  │  - learning_log    │  │    - success/failure counts    │   │
-│  └────────────────────┘  └────────────────────────────────┘   │
+│  │  - patterns        │  │    - tool_type (Edit/Bash/...) │   │
+│  │  - skills          │  │    - embedding (384-dim BLOB)  │   │
+│  │  - causal_edges    │  │    - context_query             │   │
+│  │  - reflection_     │  │    - success/failure counts    │   │
+│  │    verdicts        │  └────────────────────────────────┘   │
+│  │  - reflection_log  │  ┌────────────────────────────────┐   │
+│  │  - embedding_meta  │  │    vectors.usearch (HNSW)      │   │
+│  └────────────────────┘  │    - Fast semantic search      │   │
+│                          │    - <5ms retrieval            │   │
+│                          └────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -723,9 +1160,13 @@ echo "Updated MANA to $LATEST"
 |-----------|--------|---------|
 | Context injection | <10ms | TBD |
 | Pattern search (10k) | <0.5ms | TBD |
+| Embedding generation | <50ms/pattern | TBD |
+| HNSW search (10k vectors) | <5ms | TBD |
 | Session-end parsing | <20ms | TBD |
 | Foreground learning | <1s | TBD |
-| Memory usage | <50MB | TBD |
+| Reflection cycle | <30s | TBD |
+| Memory usage (base) | <50MB | TBD |
+| Memory usage (with embeddings) | <100MB | TBD |
 
 ---
 
