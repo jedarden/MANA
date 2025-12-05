@@ -839,8 +839,8 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                         "p2p" => {
                             // Parse discovery method
                             let discovery = match discover.to_lowercase().as_str() {
-                                "mdns" => sync::DiscoveryMethod::MDNS,
-                                "dht" => sync::DiscoveryMethod::DHT,
+                                "mdns" => sync::DiscoveryMethod::Mdns,
+                                "dht" => sync::DiscoveryMethod::Dht,
                                 _ => sync::DiscoveryMethod::Static,
                             };
 

@@ -285,6 +285,7 @@ pub struct ReflectionStatus {
 }
 
 /// Log a reflection cycle to the database
+#[allow(clippy::too_many_arguments)]
 pub fn log_reflection_cycle(
     conn: &Connection,
     trigger_type: &str,

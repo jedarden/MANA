@@ -59,7 +59,7 @@ pub struct P2PConfig {
     /// This node's unique identifier
     pub node_id: String,
     /// CRDT merge strategy
-    pub merge_strategy: CRDTMergeStrategy,
+    pub merge_strategy: CrdtMergeStrategy,
 }
 
 impl Default for P2PConfig {
@@ -70,7 +70,7 @@ impl Default for P2PConfig {
             listen_port: 4222,
             static_peers: Vec::new(),
             node_id: generate_node_id(),
-            merge_strategy: CRDTMergeStrategy::LWW,
+            merge_strategy: CrdtMergeStrategy::Lww,
         }
     }
 }
@@ -78,23 +78,24 @@ impl Default for P2PConfig {
 /// Discovery method for finding peers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[allow(clippy::upper_case_acronyms)]
 pub enum DiscoveryMethod {
     /// Manual static peer list
     Static,
     /// mDNS for local network discovery (future)
     #[serde(rename = "mdns")]
-    MDNS,
+    Mdns,
     /// DHT for internet-wide discovery (future)
     #[serde(rename = "dht")]
-    DHT,
+    Dht,
 }
 
 impl std::fmt::Display for DiscoveryMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DiscoveryMethod::Static => write!(f, "static"),
-            DiscoveryMethod::MDNS => write!(f, "mdns"),
-            DiscoveryMethod::DHT => write!(f, "dht"),
+            DiscoveryMethod::Mdns => write!(f, "mdns"),
+            DiscoveryMethod::Dht => write!(f, "dht"),
         }
     }
 }
@@ -102,18 +103,19 @@ impl std::fmt::Display for DiscoveryMethod {
 /// CRDT merge strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum CRDTMergeStrategy {
+#[allow(clippy::upper_case_acronyms)]
+pub enum CrdtMergeStrategy {
     /// Last-Writer-Wins (timestamp-based)
-    LWW,
+    Lww,
     /// Add-only (never delete, merge counts)
     AddOnly,
 }
 
-impl std::fmt::Display for CRDTMergeStrategy {
+impl std::fmt::Display for CrdtMergeStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CRDTMergeStrategy::LWW => write!(f, "lww"),
-            CRDTMergeStrategy::AddOnly => write!(f, "add-only"),
+            CrdtMergeStrategy::Lww => write!(f, "lww"),
+            CrdtMergeStrategy::AddOnly => write!(f, "add-only"),
         }
     }
 }
@@ -226,12 +228,12 @@ pub struct CRDTMap {
     /// This node's ID
     pub node_id: String,
     /// Merge strategy
-    pub strategy: CRDTMergeStrategy,
+    pub strategy: CrdtMergeStrategy,
 }
 
 impl CRDTMap {
     /// Create a new CRDT map
-    pub fn new(node_id: String, strategy: CRDTMergeStrategy) -> Self {
+    pub fn new(node_id: String, strategy: CrdtMergeStrategy) -> Self {
         Self {
             entries: HashMap::new(),
             node_id,
@@ -246,8 +248,8 @@ impl CRDTMap {
 
         if let Some(existing) = self.entries.get(&hash) {
             let merged = match self.strategy {
-                CRDTMergeStrategy::LWW => existing.merge_lww(&new_entry),
-                CRDTMergeStrategy::AddOnly => existing.merge_add_only(&new_entry),
+                CrdtMergeStrategy::Lww => existing.merge_lww(&new_entry),
+                CrdtMergeStrategy::AddOnly => existing.merge_add_only(&new_entry),
             };
             self.entries.insert(hash, merged);
         } else {
@@ -260,8 +262,8 @@ impl CRDTMap {
         for (hash, other_entry) in &other.entries {
             if let Some(existing) = self.entries.get(hash) {
                 let merged = match self.strategy {
-                    CRDTMergeStrategy::LWW => existing.merge_lww(other_entry),
-                    CRDTMergeStrategy::AddOnly => existing.merge_add_only(other_entry),
+                    CrdtMergeStrategy::Lww => existing.merge_lww(other_entry),
+                    CrdtMergeStrategy::AddOnly => existing.merge_add_only(other_entry),
                 };
                 self.entries.insert(hash.clone(), merged);
             } else {
@@ -397,7 +399,7 @@ pub fn init_p2p_sync(
         listen_port,
         static_peers,
         node_id: generate_node_id(),
-        merge_strategy: CRDTMergeStrategy::LWW,
+        merge_strategy: CrdtMergeStrategy::Lww,
     };
 
     save_p2p_config(mana_dir, &config)?;
@@ -812,8 +814,8 @@ mod tests {
 
     #[test]
     fn test_crdt_map_merge() {
-        let mut map1 = CRDTMap::new("node1".to_string(), CRDTMergeStrategy::LWW);
-        let mut map2 = CRDTMap::new("node2".to_string(), CRDTMergeStrategy::LWW);
+        let mut map1 = CRDTMap::new("node1".to_string(), CrdtMergeStrategy::Lww);
+        let mut map2 = CRDTMap::new("node2".to_string(), CrdtMergeStrategy::Lww);
 
         let pattern1 = ExportablePattern {
             pattern_hash: "hash1".to_string(),
@@ -856,7 +858,7 @@ mod tests {
     #[test]
     fn test_discovery_method_display() {
         assert_eq!(DiscoveryMethod::Static.to_string(), "static");
-        assert_eq!(DiscoveryMethod::MDNS.to_string(), "mdns");
-        assert_eq!(DiscoveryMethod::DHT.to_string(), "dht");
+        assert_eq!(DiscoveryMethod::Mdns.to_string(), "mdns");
+        assert_eq!(DiscoveryMethod::Dht.to_string(), "dht");
     }
 }

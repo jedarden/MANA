@@ -31,7 +31,7 @@ pub use supabase_backend::{
 pub use p2p_backend::{
     init_p2p_sync, sync_with_peer, sync_with_all_peers, p2p_status,
     add_peer, remove_peer, list_peers, is_p2p_available,
-    P2PConfig, P2PStatus, PeerInfo, DiscoveryMethod, CRDTMergeStrategy,
+    P2PConfig, P2PStatus, PeerInfo, DiscoveryMethod, CrdtMergeStrategy,
     CRDTMap, CRDTEntry,
 };
 
