@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 /// Calculate similarity between query and patterns using TF-IDF-like scoring
 /// Returns a score between 0.0 and 1.0
+/// Returns 0.0 if there's a definite tech stack mismatch (e.g., Python query vs Shell pattern)
 pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
     let query_tokens = tokenize(query);
     let pattern_tokens = tokenize(pattern_text);
@@ -19,15 +20,17 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
     let query_tech = detect_tech_stack(&query_tokens);
     let pattern_tech = detect_tech_stack(&pattern_tokens);
 
-    // Apply tech stack penalty for mismatched contexts
-    let tech_penalty = if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown {
-        if query_tech == pattern_tech {
-            1.5 // Boost for matching tech stack
-        } else {
-            0.3 // Heavy penalty for mismatched stacks
-        }
+    // If both have known tech stacks and they DON'T match, return 0
+    // This is a hard filter - showing Python patterns for Rust queries is harmful
+    if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown && query_tech != pattern_tech {
+        return 0.0; // Definite tech mismatch - don't show this pattern
+    }
+
+    // Apply boost for matching tech stack
+    let tech_boost = if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown && query_tech == pattern_tech {
+        1.5 // Boost for matching tech stack
     } else {
-        1.0 // No adjustment for unknown contexts
+        1.0 // Neutral for unknown contexts
     };
 
     // Build term frequency maps
@@ -48,9 +51,9 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
         }
     }
 
-    // Normalize and apply tech penalty
+    // Normalize and apply tech boost
     if query_norm > 0.0 {
-        (score / query_norm.sqrt()) * tech_penalty
+        (score / query_norm.sqrt()) * tech_boost
     } else {
         0.0
     }
@@ -82,8 +85,8 @@ fn detect_tech_stack(tokens: &[String]) -> TechStack {
             "unwrap" | "impl" | "struct" | "enum" | "mut" | "async" => rust_signals += 1,
 
             // JavaScript/TypeScript/Node signals
-            "js" | "ts" | "tsx" | "jsx" | "npm" | "node" | "yarn" | "javascript" | "typescript" => js_signals += 2,
-            "package" | "json" | "react" | "vue" | "express" | "next" | "webpack" | "eslint" => js_signals += 1,
+            "js" | "ts" | "tsx" | "jsx" | "npm" | "npx" | "node" | "yarn" | "javascript" | "typescript" => js_signals += 2,
+            "package" | "json" | "react" | "vue" | "express" | "next" | "webpack" | "eslint" | "deno" | "bun" => js_signals += 1,
 
             // Python signals
             "py" | "python" | "pip" | "conda" | "pytest" | "django" | "flask" => python_signals += 2,

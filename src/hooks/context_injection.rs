@@ -12,13 +12,25 @@ use tracing::{debug, info, warn};
 
 use crate::storage::{PatternStore, Pattern, calculate_similarity};
 
+/// Top-level hook input structure from Claude Code
 #[derive(Debug, Deserialize)]
-struct ToolInput {
+struct HookInput {
     tool_name: Option<String>,
+    tool_input: Option<ToolInputFields>,
+    // Also support flat structure for backwards compatibility
+    #[serde(flatten)]
+    flat: ToolInputFields,
+}
+
+/// Fields that can appear in tool_input or at top level
+#[derive(Debug, Default, Deserialize)]
+struct ToolInputFields {
     file_path: Option<String>,
     command: Option<String>,
     subagent_type: Option<String>,
     description: Option<String>,
+    content: Option<String>,
+    prompt: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +47,10 @@ const INJECTION_TIMEOUT_MS: u128 = 10;
 
 /// Minimum relevance score to include a pattern (0 = no filtering)
 const MIN_RELEVANCE_SCORE: usize = 0;
+
+/// Minimum similarity score for patterns when tech stack is detected in query
+/// This prevents showing shell patterns for Rust queries, etc.
+const MIN_TECH_STACK_SIMILARITY: f64 = 0.15;
 
 /// Inject context from ReasoningBank based on tool input
 ///
@@ -55,11 +71,11 @@ pub async fn inject_context(tool: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Parse tool input
-    let tool_input: ToolInput = match serde_json::from_str(&input) {
-        Ok(ti) => ti,
+    // Parse hook input
+    let hook_input: HookInput = match serde_json::from_str(&input) {
+        Ok(hi) => hi,
         Err(e) => {
-            debug!("Failed to parse tool input: {}, passing through", e);
+            debug!("Failed to parse hook input: {}, passing through", e);
             // Pass through original input
             print!("{}", input);
             io::stdout().flush()?;
@@ -67,8 +83,15 @@ pub async fn inject_context(tool: &str) -> Result<()> {
         }
     };
 
+    // Extract fields from either nested tool_input or flat structure
+    let fields = if let Some(ref ti) = hook_input.tool_input {
+        ti
+    } else {
+        &hook_input.flat
+    };
+
     // Build query based on tool type
-    let query = build_query(tool, &tool_input);
+    let query = build_query(tool, fields);
     debug!("Query: {}", query);
 
     // Query ReasoningBank for patterns
@@ -173,33 +196,30 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
                 // Combine similarity with success score for final ranking
                 let success_score = (p.success_count - p.failure_count) as f64;
                 let combined_score = similarity * 0.6 + (success_score.max(0.0) / 10.0) * 0.4;
-                (p, combined_score)
+                (p, similarity, combined_score)
             })
-            .filter(|(_, score)| *score > 0.02)  // Lower threshold - let success score contribute more
+            // Filter out patterns with very low similarity (likely tech stack mismatch)
+            // This prevents showing shell patterns for Python queries, etc.
+            .filter(|(_, sim, _)| *sim >= MIN_TECH_STACK_SIMILARITY)
+            .map(|(p, _, score)| (p, score))
             .collect();
 
         // Sort by combined score (descending)
         scored_patterns.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored_patterns.truncate(MAX_PATTERNS);
 
-        debug!("Ranked {} patterns by similarity", scored_patterns.len());
+        debug!("Ranked {} patterns by similarity (filtered by tech stack)", scored_patterns.len());
         patterns = scored_patterns.into_iter().map(|(p, _)| p).collect();
     } else {
         patterns.truncate(MAX_PATTERNS);
     }
 
-    // If still no patterns after similarity filtering, fall back to top patterns by score
-    if patterns.is_empty() {
-        debug!("Similarity filtering returned 0, falling back to score-based selection");
-        let store = PatternStore::open(&db_path)?;
-        for tool_type in &primary_types {
-            let mut type_patterns = store.get_by_tool(tool_type, MAX_PATTERNS)?;
-            patterns.append(&mut type_patterns);
-        }
-        patterns.sort_by(|a, b| {
-            (b.success_count - b.failure_count).cmp(&(a.success_count - a.failure_count))
-        });
-        patterns.truncate(MAX_PATTERNS);
+    // If similarity filtering returned empty, don't fall back to potentially irrelevant patterns.
+    // It's better to show no context than wrong context that could mislead the model.
+    // The filtering likely removed patterns due to tech stack mismatch (e.g., shell patterns for Python query)
+    if patterns.is_empty() && !query.is_empty() {
+        debug!("Similarity filtering returned 0 patterns - no relevant context for this query");
+        // Return empty - showing irrelevant patterns is worse than no patterns
     }
 
     if !patterns.is_empty() {
@@ -336,7 +356,7 @@ fn extract_insight(context_query: &str) -> String {
 
 /// Format approach string into an actionable hint
 /// Input: "Bash - npm - Initialize project with package.json"
-/// Output: "Successfully ran `npm` to initialize project with package.json"
+/// Output: "Ran `npm`: Initialize project with package.json"
 fn format_approach_hint(approach: &str) -> String {
     // Pattern: "ToolName - command - description"
     let parts: Vec<&str> = approach.splitn(3, " - ").collect();
@@ -349,7 +369,12 @@ fn format_approach_hint(approach: &str) -> String {
                 "Edit" | "MultiEdit" => format!("{}", truncate_str(desc, 80)),
                 "Write" => format!("{}", truncate_str(desc, 80)),
                 "Read" | "Glob" | "Grep" => format!("{}", truncate_str(desc, 80)),
-                "Task" => format!("Delegated to {}: {}", cmd, truncate_str(desc, 50)),
+                "Task" => {
+                    // Handle "delegating to agent - description" format
+                    // cmd is like "delegating to researcher", extract agent name
+                    let agent = cmd.trim_start_matches("delegating to ").trim();
+                    format!("Delegated to {}: {}", agent, truncate_str(desc, 50))
+                }
                 _ => format!("{}: {}", tool, truncate_str(desc, 70)),
             }
         }
@@ -384,7 +409,7 @@ fn get_mana_dir() -> Result<PathBuf> {
     Ok(home.join(".mana"))
 }
 
-fn build_query(tool: &str, input: &ToolInput) -> String {
+fn build_query(tool: &str, input: &ToolInputFields) -> String {
     match tool {
         "edit" => {
             let path = input.file_path.as_deref().unwrap_or("unknown");
