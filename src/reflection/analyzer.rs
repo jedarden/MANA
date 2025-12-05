@@ -420,6 +420,14 @@ impl TrajectoryAnalyzer {
     ///
     /// This links trajectories to patterns that would have been injected
     /// by looking at the tool calls and matching against stored patterns.
+    ///
+    /// Strategy:
+    /// 1. Try to find a strong semantic match (similarity > 0.30)
+    /// 2. Fall back to moderate match (similarity > 0.15) if no strong match
+    /// 3. Fall back to best available pattern of same tool type as last resort
+    ///
+    /// This ensures verdicts can still provide feedback even when patterns
+    /// don't closely match the trajectory context.
     pub fn find_matching_pattern(&self, trajectory: &Trajectory) -> Option<i64> {
         let db_path = self.db_path.as_ref()?;
         if !db_path.exists() {
@@ -433,33 +441,58 @@ impl TrajectoryAnalyzer {
         let tool_type = &primary_tool.tool_name;
 
         // Build a query from the tool input (similar to inject)
-        let query = self.build_query_from_tool_call(&primary_tool);
+        let query = self.build_query_from_tool_call(primary_tool);
 
         // Get patterns for this tool type
-        let patterns = store.get_by_tool(tool_type, 10).ok()?;
+        let patterns = store.get_by_tool(tool_type, 20).ok()?;
 
         if patterns.is_empty() {
             return None;
         }
 
         // Find the best matching pattern by similarity
-        let mut best_match: Option<(i64, f64)> = None;
+        // Track both strong matches (>0.30) and moderate matches (>0.15)
+        let mut best_strong: Option<(i64, f64)> = None;
+        let mut best_moderate: Option<(i64, f64)> = None;
+        let mut best_any: Option<(i64, f64)> = None;
 
-        for pattern in patterns {
+        for pattern in &patterns {
             let similarity = calculate_similarity(&query, &pattern.context_query);
 
-            // Only consider patterns with reasonable similarity (>30%)
+            // Track best overall (for fallback)
+            if best_any.is_none() || similarity > best_any.as_ref().unwrap().1 {
+                best_any = Some((pattern.id, similarity));
+            }
+
+            // Strong match threshold (same as injection)
             if similarity > 0.30 {
-                if best_match.is_none() || similarity > best_match.as_ref().unwrap().1 {
-                    best_match = Some((pattern.id, similarity));
+                if best_strong.is_none() || similarity > best_strong.as_ref().unwrap().1 {
+                    best_strong = Some((pattern.id, similarity));
+                }
+            }
+            // Moderate match threshold (reflection-specific, more lenient)
+            else if similarity > 0.15 {
+                if best_moderate.is_none() || similarity > best_moderate.as_ref().unwrap().1 {
+                    best_moderate = Some((pattern.id, similarity));
                 }
             }
         }
 
+        // Prefer strong match, then moderate, then best available
+        let best_match = best_strong
+            .or(best_moderate)
+            .or_else(|| {
+                // Fallback: use the highest-scoring pattern of this tool type
+                // This ensures verdicts can still provide feedback
+                // But only if similarity is non-zero (some word overlap)
+                best_any.filter(|(_, sim)| *sim > 0.05)
+            });
+
         debug!(
-            "Pattern match for trajectory: {:?} (query: {})",
+            "Pattern match for trajectory: {:?} (query: {}, patterns_checked: {})",
             best_match.as_ref().map(|(id, sim)| format!("id={}, sim={:.2}", id, sim)),
-            query.chars().take(50).collect::<String>()
+            query.chars().take(50).collect::<String>(),
+            patterns.len()
         );
 
         best_match.map(|(id, _)| id)
