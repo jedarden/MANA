@@ -290,6 +290,87 @@ After MANA is built, configure Claude Code hooks:
 }
 ```
 
+### Daemon Mode (Background Learning)
+
+MANA supports two learning modes:
+
+1. **Event-Driven (Default)**: Learning triggered by session-end hooks
+2. **Daemon Mode**: Continuous background learning and consolidation
+
+#### Starting the Daemon
+
+```bash
+# Start background daemon
+./scripts/mana-daemon.sh start
+
+# Check status
+./scripts/mana-daemon.sh status
+
+# Stop daemon
+./scripts/mana-daemon.sh stop
+```
+
+#### Configuration
+
+```bash
+# Environment variables for daemon tuning
+MANA_LEARN_INTERVAL=300          # Seconds between learning runs (default: 5 min)
+MANA_CONSOLIDATE_INTERVAL=3600   # Seconds between consolidation (default: 1 hour)
+MANA_LOG_DIR=~/.mana/logs        # Daemon log directory
+```
+
+#### Architecture: Two-Tier Learning
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Claude Code Sessions                        │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
+│  │ Session  │ │ Session  │ │ Session  │ │ Session  │          │
+│  │  Alpha   │ │  Bravo   │ │ Charlie  │ │  Delta   │   ...    │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘          │
+│       │            │            │            │                 │
+│       ▼            ▼            ▼            ▼                 │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │              Pre-Hooks (Injection Layer)                │  │
+│  │   mana inject --tool edit/bash/read                     │  │
+│  │   Budget: <10ms per hook invocation                     │  │
+│  │   Returns: Top relevant patterns from ReasoningBank     │  │
+│  └─────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ JSONL Logs (~/.claude/projects/)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     MANA Daemon (Background)                    │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │              Learning Layer (Every 5 min)               │  │
+│  │   - Parse JSONL trajectories from all sessions         │  │
+│  │   - Extract success/failure patterns                   │  │
+│  │   - Update ReasoningBank (patterns table)              │  │
+│  │   - Discover causal edges between patterns             │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │              Consolidation Layer (Every 1 hour)         │  │
+│  │   - Merge similar patterns (>90% similarity)           │  │
+│  │   - Decay unused patterns (not used in 7+ days)        │  │
+│  │   - Prune low-quality patterns (score < -3)            │  │
+│  │   - Build skills from pattern clusters                 │  │
+│  └─────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     ReasoningBank (Storage)                     │
+│  ┌────────────────────┐  ┌────────────────────────────────┐   │
+│  │  metadata.sqlite   │  │    patterns table              │   │
+│  │  - patterns table  │  │    - tool_type (Edit/Bash/...) │   │
+│  │  - skills table    │  │    - command_category (rs/npm) │   │
+│  │  - causal_edges    │  │    - context_query (task/appr) │   │
+│  │  - learning_log    │  │    - success/failure counts    │   │
+│  └────────────────────┘  └────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## Self-Update Mechanism
