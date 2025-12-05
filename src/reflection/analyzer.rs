@@ -465,46 +465,102 @@ impl TrajectoryAnalyzer {
         best_match.map(|(id, _)| id)
     }
 
-    /// Build a query string from a tool call (mirrors inject logic)
+    /// Build a query string from a tool call
+    ///
+    /// IMPORTANT: This must match the format used in foreground.rs extract_tool_context()
+    /// so that similarity matching works correctly. The pattern format is:
+    /// "Task: <category>\nApproach: <tool> - <context>\nOutcome: Success"
     fn build_query_from_tool_call(&self, tool_call: &crate::learning::trajectory::ToolCall) -> String {
         let input = &tool_call.tool_input;
+        let tool_name = &tool_call.tool_name;
 
-        match tool_call.tool_name.as_str() {
+        // Build tool context matching foreground.rs extract_tool_context format
+        let tool_context = match tool_name.as_str() {
             "Edit" | "Write" | "MultiEdit" => {
                 let file_path = input.get("file_path")
                     .or_else(|| input.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let ext = file_path.rsplit('.').next().unwrap_or("unknown");
                 let filename = file_path.rsplit('/').next().unwrap_or(file_path);
-                format!("Editing {} file {}", ext, filename)
-            }
-            "Bash" => {
-                let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                let first_word = cmd.split_whitespace().next().unwrap_or("");
-                let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                if !desc.is_empty() {
-                    format!("Bash {} {}", first_word, desc)
+                let ext = file_path.rsplit('.').next().unwrap_or("");
+
+                // Include tech stack keywords like foreground.rs does
+                let tech_hint = match ext {
+                    "rs" => "rust cargo",
+                    "ts" | "tsx" => "typescript npm node",
+                    "js" | "jsx" => "javascript npm node",
+                    "py" => "python pip",
+                    "go" => "golang",
+                    "rb" => "ruby",
+                    "java" => "java maven",
+                    "sh" | "bash" => "shell bash",
+                    "json" => "json config",
+                    "toml" => "toml rust cargo",
+                    "yaml" | "yml" => "yaml config",
+                    "md" => "markdown docs",
+                    _ => "",
+                };
+
+                let old_str_preview = input.get("old_string")
+                    .and_then(|v| v.as_str())
+                    .map(|s| &s[..s.len().min(40)])
+                    .unwrap_or("");
+
+                if !old_str_preview.is_empty() {
+                    format!("{} {} editing {} (replacing '{}')", ext, tech_hint, filename, old_str_preview)
                 } else {
-                    format!("Bash {}", first_word)
+                    format!("{} {} writing to {}", ext, tech_hint, filename)
                 }
             }
-            "Task" => {
-                let agent = input.get("subagent_type").and_then(|v| v.as_str()).unwrap_or("unknown");
+            "Bash" => {
+                let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("unknown command");
+                let first_word = cmd.split_whitespace().next().unwrap_or("cmd");
                 let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                format!("Agent: {} - {}", agent, desc)
+                if !desc.is_empty() {
+                    format!("{} - {}", first_word, &desc[..desc.len().min(60)])
+                } else {
+                    let cmd_preview = &cmd[..cmd.len().min(80)];
+                    format!("running '{}'", cmd_preview)
+                }
             }
             "Read" | "Glob" | "Grep" => {
                 let path = input.get("file_path")
                     .or_else(|| input.get("path"))
-                    .or_else(|| input.get("pattern"))
+                    .and_then(|v| v.as_str())
+                    .map(|p| p.rsplit('/').next().unwrap_or(p))
+                    .unwrap_or("");
+                let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+                if !pattern.is_empty() {
+                    let pattern_preview = &pattern[..pattern.len().min(30)];
+                    format!("searching for '{}' in {}", pattern_preview, path)
+                } else if !path.is_empty() {
+                    format!("reading {}", path)
+                } else {
+                    "exploring codebase".to_string()
+                }
+            }
+            "Task" => {
+                let agent = input.get("subagent_type").and_then(|v| v.as_str()).unwrap_or("agent");
+                let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                let desc_preview = &desc[..desc.len().min(60)];
+                format!("delegating to {} - {}", agent, desc_preview)
+            }
+            "TodoWrite" => "updating task list".to_string(),
+            "WebSearch" | "WebFetch" => {
+                let query = input.get("query")
+                    .or_else(|| input.get("url"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let filename = path.rsplit('/').next().unwrap_or(path);
-                format!("Reading {}", filename)
+                let query_preview = &query[..query.len().min(60)];
+                format!("searching web: {}", query_preview)
             }
-            _ => format!("Tool: {}", tool_call.tool_name),
-        }
+            _ => format!("using {} tool", tool_name),
+        };
+
+        // Return just the tool context - this will be compared against pattern's context_query
+        // which has format "Task: X\nApproach: Y - <tool_context>\nOutcome: Success"
+        // The similarity function can match on the tool_context portion
+        tool_context
     }
 
     /// Judge a trajectory and produce a verdict
