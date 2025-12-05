@@ -48,9 +48,9 @@ const INJECTION_TIMEOUT_MS: u128 = 10;
 /// Minimum relevance score to include a pattern (0 = no filtering)
 const MIN_RELEVANCE_SCORE: usize = 0;
 
-/// Minimum similarity score for patterns when tech stack is detected in query
-/// This prevents showing shell patterns for Rust queries, etc.
-const MIN_TECH_STACK_SIMILARITY: f64 = 0.15;
+/// Minimum similarity score for patterns (0.1 = very loose, allows fallback to generic patterns)
+/// Lower threshold to ensure patterns are shown even when tech stack doesn't exactly match
+const MIN_TECH_STACK_SIMILARITY: f64 = 0.1;
 
 /// Inject context from ReasoningBank based on tool input
 ///

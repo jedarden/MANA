@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 /// Calculate similarity between query and patterns using TF-IDF-like scoring
 /// Returns a score between 0.0 and 1.0
-/// Returns 0.0 if there's a definite tech stack mismatch (e.g., Python query vs Shell pattern)
+/// Returns a penalty (low score multiplier) for tech stack mismatches
 pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
     let query_tokens = tokenize(query);
     let pattern_tokens = tokenize(pattern_text);
@@ -20,17 +20,18 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
     let query_tech = detect_tech_stack(&query_tokens);
     let pattern_tech = detect_tech_stack(&pattern_tokens);
 
-    // If both have known tech stacks and they DON'T match, return 0
-    // This is a hard filter - showing Python patterns for Rust queries is harmful
-    if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown && query_tech != pattern_tech {
-        return 0.0; // Definite tech mismatch - don't show this pattern
-    }
-
-    // Apply boost for matching tech stack
-    let tech_boost = if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown && query_tech == pattern_tech {
-        1.5 // Boost for matching tech stack
+    // Calculate tech stack modifier:
+    // - Same tech stack: 1.5x boost
+    // - Unknown on either side: 1.0x (neutral, allows generic patterns)
+    // - Different known tech stacks: 0.3x penalty (still shows if very relevant, but lower ranked)
+    let tech_modifier = if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown {
+        if query_tech == pattern_tech {
+            1.5 // Boost for matching tech stack
+        } else {
+            0.3 // Penalty for mismatched tech stack (but don't completely filter out)
+        }
     } else {
-        1.0 // Neutral for unknown contexts
+        1.0 // Neutral for unknown contexts - allows generic patterns to match
     };
 
     // Build term frequency maps
@@ -51,9 +52,9 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
         }
     }
 
-    // Normalize and apply tech boost
+    // Normalize and apply tech modifier
     if query_norm > 0.0 {
-        (score / query_norm.sqrt()) * tech_boost
+        (score / query_norm.sqrt()) * tech_modifier
     } else {
         0.0
     }
@@ -283,7 +284,8 @@ mod tests {
             "fix rust compilation error",
             "python web scraping tutorial"
         );
-        assert!(score < 0.3, "Unrelated should have low score: {}", score);
+        // Mismatched tech stacks get 0.3x penalty, so score should be very low but not zero
+        assert!(score < 0.5, "Unrelated should have low score: {}", score);
     }
 
     #[test]
