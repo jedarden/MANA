@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, warn};
 
-use crate::storage::{PatternStore, Pattern, calculate_similarity};
+use crate::storage::{PatternStore, Pattern, calculate_similarity, CausalStore};
 
 /// Top-level hook input structure from Claude Code
 #[derive(Debug, Deserialize)]
@@ -246,9 +246,15 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
 
         // Sort by combined score (descending)
         scored_patterns.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Filter out conflicting patterns using causal edges
+        // If the top pattern has conflicts, remove those conflicts from candidates
+        let scored_patterns = filter_causal_conflicts(&db_path, scored_patterns);
+
+        let mut scored_patterns = scored_patterns;
         scored_patterns.truncate(MAX_PATTERNS);
 
-        debug!("Ranked {} patterns by similarity (filtered by tech stack)", scored_patterns.len());
+        debug!("Ranked {} patterns by similarity (filtered by tech stack + causal)", scored_patterns.len());
         patterns = scored_patterns.into_iter().map(|(p, _)| p).collect();
     } else {
         patterns.truncate(MAX_PATTERNS);
@@ -285,6 +291,42 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     })
 }
 
+
+/// Filter out patterns that conflict with top-ranked patterns
+/// This uses causal edges to prevent recommending incompatible patterns together
+fn filter_causal_conflicts(db_path: &PathBuf, mut patterns: Vec<(Pattern, f64)>) -> Vec<(Pattern, f64)> {
+    if patterns.is_empty() {
+        return patterns;
+    }
+
+    // Try to open causal store, skip filtering if it fails
+    let causal_store = match CausalStore::open_readonly(db_path) {
+        Ok(store) => store,
+        Err(_) => return patterns, // No causal data available
+    };
+
+    // Get conflicts for the top pattern
+    let top_pattern_id = patterns[0].0.id;
+    let conflicts = match causal_store.get_conflicts(top_pattern_id) {
+        Ok(c) => c,
+        Err(_) => return patterns,
+    };
+
+    if conflicts.is_empty() {
+        return patterns;
+    }
+
+    // Filter out conflicting patterns
+    let original_len = patterns.len();
+    patterns.retain(|(p, _)| !conflicts.contains(&p.id));
+
+    let filtered = original_len - patterns.len();
+    if filtered > 0 {
+        debug!("Filtered {} conflicting patterns based on causal edges", filtered);
+    }
+
+    patterns
+}
 
 /// Format success patterns into context block
 fn format_success_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {

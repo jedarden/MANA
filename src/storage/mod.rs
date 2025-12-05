@@ -10,9 +10,11 @@ use tracing::info;
 
 pub mod patterns;
 pub mod similarity;
+pub mod causal;
 
 pub use patterns::{PatternStore, Pattern};
 pub use similarity::calculate_similarity;
+pub use causal::{CausalStore, CausalEdge};
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {
@@ -53,8 +55,26 @@ pub async fn init() -> Result<()> {
             details TEXT
         );
 
+        -- Causal edges track pattern relationships discovered during learning
+        -- positive lift (>1.5) = synergy (patterns work well together)
+        -- negative lift (<0.5) = conflict (patterns interfere with each other)
+        CREATE TABLE IF NOT EXISTS causal_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pattern_a_id INTEGER NOT NULL,
+            pattern_b_id INTEGER NOT NULL,
+            lift REAL NOT NULL,
+            co_occurrences INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(pattern_a_id, pattern_b_id),
+            FOREIGN KEY (pattern_a_id) REFERENCES patterns(id) ON DELETE CASCADE,
+            FOREIGN KEY (pattern_b_id) REFERENCES patterns(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_patterns_tool ON patterns(tool_type);
         CREATE INDEX IF NOT EXISTS idx_patterns_hash ON patterns(pattern_hash);
+        CREATE INDEX IF NOT EXISTS idx_causal_pattern_a ON causal_edges(pattern_a_id);
+        CREATE INDEX IF NOT EXISTS idx_causal_pattern_b ON causal_edges(pattern_b_id);
         "#,
     )?;
 

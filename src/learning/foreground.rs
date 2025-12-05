@@ -13,7 +13,7 @@ use tracing::{debug, info};
 
 use super::trajectory::{parse_trajectories, Trajectory};
 use super::LearningResult;
-use crate::storage::{PatternStore, Pattern};
+use crate::storage::{PatternStore, Pattern, CausalStore};
 
 /// Maximum patterns to extract per trajectory (ReasoningBank constraint)
 const MAX_PATTERNS_PER_TRAJECTORY: usize = 3;
@@ -95,6 +95,12 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
     }
 
     info!("Extracted {} Edit patterns, {} Bash patterns", edit_count, bash_count);
+
+    // Discover causal edges from pattern co-occurrences
+    let causal_edges = discover_causal_edges(&db_path, &all_trajectories)?;
+    if causal_edges > 0 {
+        info!("Discovered {} causal edges from co-occurrences", causal_edges);
+    }
 
     // Log learning event to database
     log_learning_event(&db_path, &result)?;
@@ -310,6 +316,76 @@ fn extract_filename(path: &str) -> &str {
 /// Extract file extension from path
 fn extract_extension(path: &str) -> &str {
     path.rsplit('.').next().unwrap_or("")
+}
+
+/// Discover causal edges from pattern co-occurrences in trajectories
+///
+/// This analyzes which patterns tend to appear together and whether
+/// they lead to success or failure, building a causal graph.
+fn discover_causal_edges(db_path: &Path, trajectories: &[Trajectory]) -> Result<usize> {
+    let store = PatternStore::open(db_path)?;
+    let causal_store = CausalStore::open(db_path)?;
+
+    let mut edges_created = 0;
+
+    for trajectory in trajectories.iter().take(50) {  // Process recent trajectories
+        // Determine trajectory success
+        let is_success = trajectory.verdict.map(|v| v.success).unwrap_or(false);
+
+        // Get pattern IDs for tool calls in this trajectory
+        let mut pattern_ids: Vec<i64> = Vec::new();
+
+        for tool_call in trajectory.tool_calls.iter().take(MAX_PATTERNS_PER_TRAJECTORY) {
+            // Try to find matching pattern by tool type
+            let tool_type = &tool_call.tool_name;
+            if let Ok(patterns) = store.get_by_tool(tool_type, 10) {
+                // Find the best matching pattern for this tool call
+                let tool_context = extract_tool_context(tool_type, &tool_call.tool_input);
+                for pattern in patterns {
+                    // Simple context match - if there's overlap, consider it related
+                    if context_matches(&tool_context, &pattern.context_query) {
+                        pattern_ids.push(pattern.id);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Record co-occurrences between all pairs of patterns
+        for i in 0..pattern_ids.len() {
+            for j in (i + 1)..pattern_ids.len() {
+                if let Err(e) = causal_store.record_cooccurrence(
+                    pattern_ids[i],
+                    pattern_ids[j],
+                    is_success,
+                ) {
+                    debug!("Failed to record causal edge: {}", e);
+                } else {
+                    edges_created += 1;
+                }
+            }
+        }
+    }
+
+    Ok(edges_created)
+}
+
+/// Check if tool context matches a pattern's context
+fn context_matches(tool_context: &str, pattern_context: &str) -> bool {
+    // Extract key terms from both contexts
+    let tool_words: std::collections::HashSet<&str> = tool_context
+        .split_whitespace()
+        .filter(|w| w.len() > 2)
+        .collect();
+
+    let pattern_words: std::collections::HashSet<&str> = pattern_context
+        .split_whitespace()
+        .filter(|w| w.len() > 2)
+        .collect();
+
+    // Check for significant overlap (at least 2 matching words)
+    let overlap = tool_words.intersection(&pattern_words).count();
+    overlap >= 2
 }
 
 /// Extract patterns from failed trajectories (what to avoid)
