@@ -328,16 +328,104 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     patterns
 }
 
-/// Extract a short task category from the user query
+/// Extract a short, generalizable task category from the user query
+///
+/// This extracts the *type* of task rather than specific details,
+/// making patterns more reusable across similar tasks.
 fn extract_task_category(query: &str) -> String {
-    // Get first meaningful phrase (up to 50 chars)
+    let lower = query.to_lowercase();
     let first_line = query.lines().next().unwrap_or(query);
-    let words: Vec<&str> = first_line.split_whitespace().take(8).collect();
-    let category = words.join(" ");
-    if category.len() > 60 {
-        format!("{}...", &category[..60])
+
+    // Detect task type by keywords and generalize
+    // More specific matches first
+    if lower.contains("fix") && lower.contains("type") && lower.contains("error") {
+        return "Fix type error".to_string();
+    }
+    if lower.contains("fix") && (lower.contains("error") || lower.contains("bug")) {
+        return "Fix error or bug".to_string();
+    }
+    if lower.contains("add") && lower.contains("feature") {
+        return "Add new feature".to_string();
+    }
+    if lower.contains("implement") {
+        return "Implement functionality".to_string();
+    }
+    if lower.contains("refactor") {
+        return "Refactor code".to_string();
+    }
+    if lower.contains("test") && (lower.contains("write") || lower.contains("add") || lower.contains("create")) {
+        return "Write tests".to_string();
+    }
+    if lower.contains("run") && lower.contains("test") {
+        return "Run tests".to_string();
+    }
+    if lower.contains("debug") {
+        return "Debug issue".to_string();
+    }
+    if lower.contains("build") || lower.contains("compile") {
+        return "Build/compile project".to_string();
+    }
+    if lower.contains("install") || lower.contains("setup") {
+        return "Install/setup dependencies".to_string();
+    }
+    if lower.contains("deploy") {
+        return "Deploy application".to_string();
+    }
+    if lower.contains("create") && (lower.contains("api") || lower.contains("endpoint")) {
+        return "Create API endpoint".to_string();
+    }
+    if lower.contains("create") && lower.contains("component") {
+        return "Create UI component".to_string();
+    }
+    if lower.contains("update") || lower.contains("modify") {
+        return "Update existing code".to_string();
+    }
+    if lower.contains("delete") || lower.contains("remove") {
+        return "Remove code/feature".to_string();
+    }
+    if lower.contains("document") || lower.contains("docs") {
+        return "Documentation".to_string();
+    }
+    if lower.contains("config") || lower.contains("configure") {
+        return "Configure settings".to_string();
+    }
+    if lower.contains("migrate") {
+        return "Migration task".to_string();
+    }
+    if lower.contains("search") || lower.contains("find") {
+        return "Search codebase".to_string();
+    }
+    if lower.contains("read") || lower.contains("understand") || lower.contains("explain")
+       || lower.contains("summarize") || lower.contains("analyze") || lower.contains("review") {
+        return "Understand code".to_string();
+    }
+
+    // Fallback: extract action verb and object type
+    let words: Vec<&str> = first_line.split_whitespace().collect();
+    if words.len() >= 2 {
+        let action = words[0].to_lowercase();
+        // Common action verbs
+        if matches!(action.as_str(), "add" | "create" | "fix" | "update" | "run" |
+                    "write" | "build" | "delete" | "move" | "rename" | "check") {
+            // Return generalized version
+            return format!("{} {}", capitalize(&action), "code/files");
+        }
+    }
+
+    // Last resort: take first few words
+    let category: String = words.iter().take(4).cloned().collect::<Vec<_>>().join(" ");
+    if category.len() > 40 {
+        format!("{}...", &category[..40])
     } else {
         category
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
     }
 }
 
@@ -584,5 +672,42 @@ mod tests {
 
         let patterns = extract_failure_patterns(&trajectory);
         assert_eq!(patterns.len(), 0, "Noise content should be filtered");
+    }
+
+    #[test]
+    fn test_extract_task_category_generalization() {
+        // Should generalize specific queries to reusable categories
+        assert_eq!(
+            extract_task_category("Fix the type error in main.rs"),
+            "Fix type error"
+        );
+        assert_eq!(
+            extract_task_category("fix this bug in the authentication module"),
+            "Fix error or bug"
+        );
+        assert_eq!(
+            extract_task_category("Add a new feature for user authentication"),
+            "Add new feature"
+        );
+        assert_eq!(
+            extract_task_category("implement the login functionality"),
+            "Implement functionality"
+        );
+        assert_eq!(
+            extract_task_category("run the tests"),
+            "Run tests"
+        );
+        assert_eq!(
+            extract_task_category("write unit tests for the API"),
+            "Write tests"
+        );
+        assert_eq!(
+            extract_task_category("refactor the database module"),
+            "Refactor code"
+        );
+        assert_eq!(
+            extract_task_category("search for where errors are handled"),
+            "Search codebase"
+        );
     }
 }
