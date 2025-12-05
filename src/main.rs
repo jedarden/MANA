@@ -254,18 +254,29 @@ enum TeamAction {
     SetupSchema,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Main entry point - uses sync main for inject command to avoid tokio overhead
+fn main() -> Result<()> {
+    // OPTIMIZATION: Parse args without initializing tokio runtime
+    // The inject command needs <10ms latency, but tokio::main adds ~50ms overhead
     let cli = Cli::parse();
 
-    // Initialize logging - for inject command, silence logs unless verbose
-    // because output goes through stdout hooks
-    let is_inject = matches!(cli.command, Commands::Inject { .. });
+    // For inject command, run without tokio for maximum speed
+    if let Commands::Inject { tool } = &cli.command {
+        // Skip logging setup for inject - it adds overhead and we don't need it
+        // Just run the context injection synchronously
+        return hooks::inject_context(tool);
+    }
+
+    // For all other commands, use the async runtime
+    run_async_main(cli)
+}
+
+/// Async main for commands that need tokio runtime
+#[tokio::main(flavor = "current_thread")]
+async fn run_async_main(cli: Cli) -> Result<()> {
+    // Initialize logging - for most commands
     let filter = if cli.verbose {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"))
-    } else if is_inject {
-        // Silent for inject to avoid polluting hook stdout
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
     } else {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
@@ -278,7 +289,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Inject { tool } => {
-            // Synchronous call to avoid tokio runtime overhead for injection hot path
+            // Should never reach here due to early return in main()
+            // But keep for completeness
             hooks::inject_context(&tool)?;
         }
         Commands::SessionEnd => {
