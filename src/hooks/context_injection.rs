@@ -33,6 +33,9 @@ const MAX_PATTERNS: usize = 3;
 /// Maximum time budget for injection in milliseconds
 const INJECTION_TIMEOUT_MS: u128 = 10;
 
+/// Minimum relevance score to include a pattern
+const MIN_RELEVANCE_SCORE: usize = 1;
+
 /// Inject context from ReasoningBank based on tool input
 ///
 /// Reads JSON from stdin, queries for relevant patterns, outputs context to stdout.
@@ -142,18 +145,41 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     });
     patterns.truncate(MAX_PATTERNS * 2);
 
+    // Deduplicate patterns by extracting unique context insights
+    let mut seen_insights: std::collections::HashSet<String> = std::collections::HashSet::new();
+    patterns.retain(|p| {
+        let insight = extract_insight(&p.context_query);
+        // Normalize insight for comparison (first 50 chars, lowercased)
+        let normalized = insight.to_lowercase().chars().take(50).collect::<String>();
+        if seen_insights.contains(&normalized) {
+            false
+        } else {
+            seen_insights.insert(normalized);
+            true
+        }
+    });
+
     // Score patterns by query relevance if query is not empty
     if !query.is_empty() {
         let query_lower = query.to_lowercase();
         let query_words: Vec<&str> = query_lower.split_whitespace().collect();
 
-        // Score each pattern by word overlap
-        patterns.sort_by(|a, b| {
-            let a_score = score_pattern_relevance(&a.context_query, &query_words);
-            let b_score = score_pattern_relevance(&b.context_query, &query_words);
-            b_score.cmp(&a_score) // Higher scores first
-        });
+        // Score each pattern by word overlap and filter low-relevance
+        let mut scored_patterns: Vec<(Pattern, usize)> = patterns
+            .into_iter()
+            .map(|p| {
+                let score = score_pattern_relevance(&p.context_query, &query_words);
+                (p, score)
+            })
+            .filter(|(_, score)| *score >= MIN_RELEVANCE_SCORE)
+            .collect();
 
+        // Sort by relevance score (descending)
+        scored_patterns.sort_by(|a, b| b.1.cmp(&a.1));
+        scored_patterns.truncate(MAX_PATTERNS);
+
+        patterns = scored_patterns.into_iter().map(|(p, _)| p).collect();
+    } else {
         patterns.truncate(MAX_PATTERNS);
     }
 
@@ -175,12 +201,42 @@ fn score_pattern_relevance(context_query: &str, query_words: &[&str]) -> usize {
     let mut score = 0;
 
     for word in query_words {
+        if word.len() < 2 {
+            continue;
+        }
+
+        // Exact word match (higher weight)
         if word.len() >= 3 && context_lower.contains(word) {
-            score += 1;
+            score += 2;
+        }
+
+        // File extension match (highest weight for file operations)
+        if word.len() <= 4 && is_file_extension(word) {
+            // Extensions like .rs, .js, .py get high priority
+            if context_lower.contains(&format!(".{}", word))
+                || context_lower.contains(&format!(" {} ", word))
+                || context_lower.contains(&format!(" {}\n", word)) {
+                score += 5;
+            }
+        }
+
+        // Language name match (high weight)
+        let lang_keywords = ["rust", "typescript", "javascript", "python", "golang", "shell"];
+        for lang in lang_keywords {
+            if word.contains(lang) && context_lower.contains(lang) {
+                score += 3;
+            }
         }
     }
 
     score
+}
+
+/// Check if a word looks like a file extension
+fn is_file_extension(word: &str) -> bool {
+    matches!(word, "rs" | "js" | "ts" | "tsx" | "jsx" | "py" | "go" | "rb" |
+             "java" | "cpp" | "c" | "h" | "md" | "json" | "yaml" | "yml" |
+             "toml" | "sh" | "bash" | "html" | "css" | "sql")
 }
 
 /// Format success patterns into context block
@@ -316,19 +372,40 @@ fn get_mana_dir() -> Result<PathBuf> {
 
 fn build_query(tool: &str, input: &ToolInput) -> String {
     match tool {
-        "edit" => format!(
-            "Editing {}: {} file",
-            input.file_path.as_deref().unwrap_or("unknown"),
-            extract_extension(input.file_path.as_deref())
-        ),
-        "bash" => format!(
-            "Command: {}",
-            input.command.as_deref()
-                .unwrap_or("")
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-        ),
+        "edit" => {
+            let path = input.file_path.as_deref().unwrap_or("unknown");
+            let ext = extract_extension(Some(path));
+            let filename = extract_filename(path);
+            // Include extension, filename, and language hints for better matching
+            let lang_hint = match ext {
+                "rs" => "rust",
+                "ts" | "tsx" => "typescript",
+                "js" | "jsx" => "javascript",
+                "py" => "python",
+                "go" => "golang",
+                "rb" => "ruby",
+                "java" => "java",
+                "cpp" | "cc" | "cxx" => "cpp",
+                "c" | "h" => "c",
+                "md" => "markdown",
+                "json" => "json",
+                "yaml" | "yml" => "yaml",
+                "toml" => "toml",
+                "sh" | "bash" => "shell script",
+                _ => ext,
+            };
+            format!("Editing {} {} file {}", ext, lang_hint, filename)
+        }
+        "bash" => {
+            let cmd = input.command.as_deref().unwrap_or("");
+            let first_word = cmd.split_whitespace().next().unwrap_or("");
+            let desc = input.description.as_deref().unwrap_or("");
+            if !desc.is_empty() {
+                format!("Command {} {}", first_word, desc)
+            } else {
+                format!("Command {}", first_word)
+            }
+        }
         "task" => format!(
             "Agent: {} - {}",
             input.subagent_type.as_deref().unwrap_or("unknown"),
@@ -336,6 +413,10 @@ fn build_query(tool: &str, input: &ToolInput) -> String {
         ),
         _ => format!("Tool: {}", tool),
     }
+}
+
+fn extract_filename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 fn extract_extension(path: Option<&str>) -> &str {
