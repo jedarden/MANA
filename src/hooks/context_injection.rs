@@ -273,8 +273,11 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
 
 /// Filter out patterns that conflict with top-ranked patterns
 /// This uses causal edges to prevent recommending incompatible patterns together
+/// OPTIMIZATION: Skip causal filtering for small result sets to reduce latency
 fn filter_causal_conflicts(db_path: &std::path::Path, mut patterns: Vec<(Pattern, f64)>) -> Vec<(Pattern, f64)> {
-    if patterns.is_empty() {
+    // Skip causal filtering entirely if we have few patterns
+    // The overhead of opening another DB connection isn't worth it for small sets
+    if patterns.len() <= MAX_PATTERNS + 1 {
         return patterns;
     }
 
@@ -509,16 +512,26 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
     }
 }
 
+/// Get MANA data directory with caching for performance
+/// Uses a static cache to avoid repeated filesystem checks
 fn get_mana_dir() -> Result<PathBuf> {
-    let cwd = std::env::current_dir()?;
-    let project_mana = cwd.join(".mana");
-    if project_mana.exists() {
-        return Ok(project_mana);
-    }
+    use std::sync::OnceLock;
+    static MANA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    Ok(home.join(".mana"))
+    Ok(MANA_DIR.get_or_init(|| {
+        // Check project-local .mana first
+        if let Ok(cwd) = std::env::current_dir() {
+            let project_mana = cwd.join(".mana");
+            if project_mana.exists() {
+                return project_mana;
+            }
+        }
+
+        // Fall back to home directory
+        dirs::home_dir()
+            .map(|h| h.join(".mana"))
+            .unwrap_or_else(|| PathBuf::from(".mana"))
+    }).clone())
 }
 
 fn build_query(tool: &str, input: &ToolInputFields) -> String {

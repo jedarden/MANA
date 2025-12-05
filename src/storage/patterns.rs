@@ -47,13 +47,15 @@ impl PatternStore {
                 | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
 
-        // Minimal pragmas for fastest startup
-        // mmap_size: 4MB is enough for typical pattern DBs, reduces initialization time
-        conn.pragma_update(None, "mmap_size", 4_194_304)?;
-        // Reduce cache size for faster startup (patterns are small)
-        conn.pragma_update(None, "cache_size", -512)?; // 512KB
+        // Minimal pragmas for fastest startup - batch execute to reduce round trips
+        conn.execute_batch(
+            "PRAGMA mmap_size = 2097152;  -- 2MB mmap (reduced for faster init)
+             PRAGMA cache_size = -256;    -- 256KB cache (minimal for read-only)
+             PRAGMA query_only = true;    -- Hints that no writes will occur"
+        )?;
+
         // Keep prepared statements cached
-        conn.set_prepared_statement_cache_capacity(8);
+        conn.set_prepared_statement_cache_capacity(4);
 
         Ok(Self { conn })
     }
