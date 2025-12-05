@@ -9,8 +9,10 @@ use std::path::PathBuf;
 use tracing::{debug, info};
 
 pub mod patterns;
+pub mod similarity;
 
 pub use patterns::{PatternStore, Pattern};
+pub use similarity::{calculate_similarity, rank_patterns};
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {

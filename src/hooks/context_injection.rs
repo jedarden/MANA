@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::storage::{PatternStore, Pattern};
+use crate::storage::{PatternStore, Pattern, calculate_similarity};
 
 #[derive(Debug, Deserialize)]
 struct ToolInput {
@@ -162,25 +162,26 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         }
     });
 
-    // Score patterns by query relevance if query is not empty
+    // Score patterns by semantic similarity if query is not empty
     if !query.is_empty() {
-        let query_lower = query.to_lowercase();
-        let query_words: Vec<&str> = query_lower.split_whitespace().collect();
-
-        // Score each pattern by word overlap and filter low-relevance
-        let mut scored_patterns: Vec<(Pattern, usize)> = patterns
+        // Use TF-IDF style similarity scoring for better relevance
+        let mut scored_patterns: Vec<(Pattern, f64)> = patterns
             .into_iter()
             .map(|p| {
-                let score = score_pattern_relevance(&p.context_query, &query_words);
-                (p, score)
+                let similarity = calculate_similarity(query, &p.context_query);
+                // Combine similarity with success score for final ranking
+                let success_score = (p.success_count - p.failure_count) as f64;
+                let combined_score = similarity * 0.7 + (success_score.max(0.0) / 10.0) * 0.3;
+                (p, combined_score)
             })
-            .filter(|(_, score)| *score >= MIN_RELEVANCE_SCORE)
+            .filter(|(_, score)| *score > 0.1)  // Minimum similarity threshold
             .collect();
 
-        // Sort by relevance score (descending)
-        scored_patterns.sort_by(|a, b| b.1.cmp(&a.1));
+        // Sort by combined score (descending)
+        scored_patterns.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored_patterns.truncate(MAX_PATTERNS);
 
+        debug!("Ranked {} patterns by similarity", scored_patterns.len());
         patterns = scored_patterns.into_iter().map(|(p, _)| p).collect();
     } else {
         patterns.truncate(MAX_PATTERNS);
@@ -205,49 +206,6 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     })
 }
 
-/// Score pattern relevance based on word overlap with query
-fn score_pattern_relevance(context_query: &str, query_words: &[&str]) -> usize {
-    let context_lower = context_query.to_lowercase();
-    let mut score = 0;
-
-    for word in query_words {
-        if word.len() < 2 {
-            continue;
-        }
-
-        // Exact word match (higher weight)
-        if word.len() >= 3 && context_lower.contains(word) {
-            score += 2;
-        }
-
-        // File extension match (highest weight for file operations)
-        if word.len() <= 4 && is_file_extension(word) {
-            // Extensions like .rs, .js, .py get high priority
-            if context_lower.contains(&format!(".{}", word))
-                || context_lower.contains(&format!(" {} ", word))
-                || context_lower.contains(&format!(" {}\n", word)) {
-                score += 5;
-            }
-        }
-
-        // Language name match (high weight)
-        let lang_keywords = ["rust", "typescript", "javascript", "python", "golang", "shell"];
-        for lang in lang_keywords {
-            if word.contains(lang) && context_lower.contains(lang) {
-                score += 3;
-            }
-        }
-    }
-
-    score
-}
-
-/// Check if a word looks like a file extension
-fn is_file_extension(word: &str) -> bool {
-    matches!(word, "rs" | "js" | "ts" | "tsx" | "jsx" | "py" | "go" | "rb" |
-             "java" | "cpp" | "c" | "h" | "md" | "json" | "yaml" | "yml" |
-             "toml" | "sh" | "bash" | "html" | "css" | "sql")
-}
 
 /// Format success patterns into context block
 fn format_success_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
