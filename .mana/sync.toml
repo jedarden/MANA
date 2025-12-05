@@ -1,9 +1,13 @@
-enabled = true
+# MANA Sync Configuration
+# Configure this to enable pattern synchronization across workspaces
+
+enabled = false
 interval_minutes = 60
 
 [backend]
+# Supported backends: Git, S3, PostgreSQL
 type = "Git"
-remote = "/tmp/.tmpE8lWJg/test-sync-repo"
+remote = ""
 branch = "main"
 
 [security]
