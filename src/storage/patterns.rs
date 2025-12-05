@@ -55,8 +55,40 @@ impl PatternStore {
         Ok(Self { conn })
     }
 
-    /// Insert a new pattern
+    /// Insert a new pattern with similarity-based deduplication
+    /// If a similar pattern exists (similarity > 0.85), we update it instead of creating a new one
     pub fn insert(&self, pattern: &Pattern) -> Result<i64> {
+        use crate::storage::calculate_similarity;
+
+        // Check for existing similar patterns of the same tool type
+        let existing = self.get_by_tool(&pattern.tool_type, 20)?;
+
+        for existing_pattern in existing {
+            let similarity = calculate_similarity(&pattern.context_query, &existing_pattern.context_query);
+
+            // If very similar (>85%), update existing instead of creating new
+            if similarity > 0.85 {
+                debug!("Merging similar pattern {} (similarity: {:.2})", existing_pattern.id, similarity);
+
+                // Increment success/failure counts on existing pattern
+                if pattern.success_count > 0 {
+                    self.conn.execute(
+                        "UPDATE patterns SET success_count = success_count + 1, last_used = CURRENT_TIMESTAMP WHERE id = ?",
+                        params![existing_pattern.id],
+                    )?;
+                }
+                if pattern.failure_count > 0 {
+                    self.conn.execute(
+                        "UPDATE patterns SET failure_count = failure_count + 1, last_used = CURRENT_TIMESTAMP WHERE id = ?",
+                        params![existing_pattern.id],
+                    )?;
+                }
+
+                return Ok(existing_pattern.id);
+            }
+        }
+
+        // No similar pattern found, insert new one
         self.conn.execute(
             r#"
             INSERT OR REPLACE INTO patterns
