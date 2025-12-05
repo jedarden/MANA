@@ -150,8 +150,8 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         });
     }
 
-    // Open pattern store
-    let store = PatternStore::open(&db_path)?;
+    // Open pattern store in read-only mode for faster access
+    let store = PatternStore::open_readonly(&db_path)?;
 
     // Map tool argument to database tool_types - prioritize exact matches
     let primary_types: Vec<&str> = match tool {

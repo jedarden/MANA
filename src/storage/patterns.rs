@@ -28,8 +28,30 @@ pub struct PatternStore {
 
 impl PatternStore {
     /// Open or create a pattern store at the given path
+    /// Uses default SQLite settings for maximum compatibility
     pub fn open(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)?;
+        Ok(Self { conn })
+    }
+
+    /// Open pattern store with read optimizations (for inject command)
+    /// Skips write-related pragmas for faster startup
+    pub fn open_readonly(db_path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        Ok(Self { conn })
+    }
+
+    /// Open pattern store with write optimizations (for learning/consolidation)
+    pub fn open_write(db_path: &Path) -> Result<Self> {
+        let conn = Connection::open(db_path)?;
+
+        // WAL mode for better concurrent access during writes
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+
         Ok(Self { conn })
     }
 
