@@ -134,10 +134,107 @@ fn get_claude_logs_dir() -> PathBuf {
 }
 
 fn count_new_trajectories(
-    _logs_dir: &std::path::Path,
-    _state: &AccumulatorState,
+    logs_dir: &std::path::Path,
+    state: &AccumulatorState,
 ) -> Result<(u32, std::collections::HashMap<PathBuf, u64>)> {
-    // TODO: Implement JSONL parsing
-    // For now, return dummy values
-    Ok((0, std::collections::HashMap::new()))
+    use std::fs::File;
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let mut total_new = 0u32;
+    let mut updated_positions = std::collections::HashMap::new();
+
+    // Collect all JSONL files from logs_dir and its subdirectories
+    let mut jsonl_files = Vec::new();
+
+    let entries = match std::fs::read_dir(logs_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            debug!("Could not read logs dir {:?}: {}", logs_dir, e);
+            return Ok((0, updated_positions));
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Check subdirectory for JSONL files
+            if let Ok(subentries) = std::fs::read_dir(&path) {
+                for subentry in subentries.flatten() {
+                    let subpath = subentry.path();
+                    if subpath.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                        jsonl_files.push(subpath);
+                    }
+                }
+            }
+        } else if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            jsonl_files.push(path);
+        }
+    }
+
+    debug!("Found {} JSONL files to process", jsonl_files.len());
+
+    for path in jsonl_files {
+
+        // Get last processed position for this file
+        let start_offset = state.last_file_positions
+            .get(&path)
+            .copied()
+            .unwrap_or(0);
+
+        // Open file and seek to last position
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                debug!("Could not open {:?}: {}", path, e);
+                continue;
+            }
+        };
+
+        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+        // Skip if we've already processed to the end
+        if start_offset >= file_len {
+            continue;
+        }
+
+        let mut reader = BufReader::new(file);
+        if start_offset > 0 {
+            if let Err(e) = reader.seek(SeekFrom::Start(start_offset)) {
+                debug!("Could not seek in {:?}: {}", path, e);
+                continue;
+            }
+        }
+
+        let mut bytes_read = start_offset;
+        let mut file_trajectories = 0u32;
+
+        // Count trajectories: assistant messages with tool_use
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+
+            bytes_read += line.len() as u64 + 1; // +1 for newline
+
+            // Fast path: check for assistant type with tool_use before full parse
+            // This is the pattern we're looking for based on the JSONL format
+            if line.contains(r#""type":"assistant""#) ||
+               (line.contains(r#""role":"assistant""#) && line.contains("tool_use")) {
+                file_trajectories += 1;
+            }
+        }
+
+        if file_trajectories > 0 {
+            debug!(
+                "Found {} new trajectories in {:?} (bytes {} to {})",
+                file_trajectories, path, start_offset, bytes_read
+            );
+        }
+
+        total_new += file_trajectories;
+        updated_positions.insert(path, bytes_read);
+    }
+
+    Ok((total_new, updated_positions))
 }
