@@ -49,6 +49,23 @@ enum Commands {
 
     /// Check for updates and self-update if available
     Update,
+
+    /// Debug: show sample patterns for inspection
+    Debug {
+        /// Number of patterns to show
+        #[arg(long, default_value = "5")]
+        limit: usize,
+    },
+
+    /// Prune low-quality or redundant patterns
+    Prune {
+        /// Minimum score threshold (success - failure)
+        #[arg(long, default_value = "-2")]
+        min_score: i64,
+    },
+
+    /// Reset patterns and re-learn from logs
+    Relearn,
 }
 
 #[tokio::main]
@@ -93,6 +110,15 @@ async fn main() -> Result<()> {
         Commands::Update => {
             info!("Checking for updates");
             println!("Update functionality not yet implemented");
+        }
+        Commands::Debug { limit } => {
+            storage::debug_patterns(limit).await?;
+        }
+        Commands::Prune { min_score } => {
+            storage::prune_patterns(min_score).await?;
+        }
+        Commands::Relearn => {
+            storage::relearn().await?;
         }
     }
 

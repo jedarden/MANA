@@ -104,7 +104,7 @@ pub async fn inject_context(tool: &str) -> Result<()> {
 }
 
 /// Query patterns from the ReasoningBank
-fn query_patterns(tool: &str, _query: &str) -> Result<ContextInjection> {
+fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     // Get MANA data directory
     let mana_dir = get_mana_dir()?;
     let db_path = mana_dir.join("metadata.sqlite");
@@ -128,23 +128,48 @@ fn query_patterns(tool: &str, _query: &str) -> Result<ContextInjection> {
         _ => tool,
     };
 
-    // Get relevant patterns sorted by success score
-    let patterns = store.get_by_tool(tool_type, MAX_PATTERNS)?;
+    // Get relevant patterns for this tool type
+    let mut patterns = store.get_by_tool(tool_type, MAX_PATTERNS * 2)?;
 
-    if patterns.is_empty() {
-        // Try getting failure patterns to avoid
-        let failure_patterns = store.get_by_tool("failure", 2)?;
-        if failure_patterns.is_empty() {
-            return Ok(ContextInjection {
-                context_block: String::new(),
-                patterns_used: vec![],
-            });
-        }
+    // Score patterns by query relevance if query is not empty
+    if !query.is_empty() {
+        let query_lower = query.to_lowercase();
+        let query_words: Vec<&str> = query_lower.split_whitespace().collect();
 
-        return format_failure_patterns(&failure_patterns);
+        // Score each pattern by word overlap
+        patterns.sort_by(|a, b| {
+            let a_score = score_pattern_relevance(&a.context_query, &query_words);
+            let b_score = score_pattern_relevance(&b.context_query, &query_words);
+            b_score.cmp(&a_score) // Higher scores first
+        });
+
+        patterns.truncate(MAX_PATTERNS);
     }
 
-    format_success_patterns(&patterns)
+    if !patterns.is_empty() {
+        return format_success_patterns(&patterns);
+    }
+
+    // If no tool-specific patterns, don't show failure patterns
+    // (they're too generic to be useful)
+    Ok(ContextInjection {
+        context_block: String::new(),
+        patterns_used: vec![],
+    })
+}
+
+/// Score pattern relevance based on word overlap with query
+fn score_pattern_relevance(context_query: &str, query_words: &[&str]) -> usize {
+    let context_lower = context_query.to_lowercase();
+    let mut score = 0;
+
+    for word in query_words {
+        if word.len() >= 3 && context_lower.contains(word) {
+            score += 1;
+        }
+    }
+
+    score
 }
 
 /// Format success patterns into context block
@@ -203,55 +228,66 @@ fn format_failure_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
 
 /// Extract a concise insight from the context query
 fn extract_insight(context_query: &str) -> String {
-    // Try to get the most relevant part
     let lines: Vec<&str> = context_query.lines().collect();
+    let mut insights = Vec::new();
 
-    // Build a combined insight from available lines
-    let mut insight_parts = Vec::new();
-
-    for line in &lines {
-        // Skip task line (we're displaying context, not repeating the task)
-        if line.starts_with("Task:") {
-            continue;
-        }
-        // Include approach info
-        if line.starts_with("Approach:") {
-            insight_parts.push(line.trim_start_matches("Approach:").trim());
-        }
-        // Include pitfall warnings
-        if line.starts_with("Pitfall:") {
-            insight_parts.push(line.trim_start_matches("Pitfall:").trim());
-        }
-        // Include advice
-        if line.starts_with("Advice:") {
-            insight_parts.push(line.trim_start_matches("Advice:").trim());
-        }
-        // Include response approach
-        if line.starts_with("Response approach:") {
-            insight_parts.push(line.trim_start_matches("Response approach:").trim());
-        }
-    }
-
-    if !insight_parts.is_empty() {
-        return insight_parts.join(" | ");
-    }
-
-    // Fall back to first meaningful line
     for line in &lines {
         let trimmed = line.trim();
-        if !trimmed.is_empty() && trimmed.len() > 5 && !trimmed.starts_with("Task:") {
-            if trimmed.len() > 120 {
-                return format!("{}...", &trimmed[..120]);
+
+        // Extract Pitfall content (key for failures)
+        if trimmed.starts_with("Pitfall:") {
+            let content = trimmed.trim_start_matches("Pitfall:").trim();
+            if !content.is_empty() && content.len() > 5 {
+                insights.push(format!("Watch out: {}", truncate_str(content, 80)));
             }
-            return trimmed.to_string();
+        }
+        // Extract Approach content
+        else if trimmed.starts_with("Approach:") {
+            let content = trimmed.trim_start_matches("Approach:").trim();
+            if !content.is_empty() && content.len() > 5 {
+                insights.push(truncate_str(content, 100).to_string());
+            }
+        }
+        // Extract tool context (e.g., "Edit - editing file.rs")
+        else if trimmed.contains(" - ") && !trimmed.starts_with("Task:") {
+            let parts: Vec<&str> = trimmed.splitn(2, " - ").collect();
+            if parts.len() == 2 {
+                insights.push(truncate_str(parts[1], 80).to_string());
+            }
         }
     }
 
-    // Last resort: truncate entire query
-    if context_query.len() > 100 {
-        format!("{}...", &context_query[..100])
+    if !insights.is_empty() {
+        return insights.join(" | ");
+    }
+
+    // Fall back: get the second line if available (skip Task: line)
+    for line in &lines {
+        let trimmed = line.trim();
+        if !trimmed.is_empty()
+            && !trimmed.starts_with("Task:")
+            && !trimmed.starts_with("Outcome:")
+            && !trimmed.starts_with("User asked:")
+            && !trimmed.starts_with("Query:")
+            && trimmed.len() > 5
+        {
+            return truncate_str(trimmed, 100).to_string();
+        }
+    }
+
+    // Last resort
+    truncate_str(context_query.lines().next().unwrap_or(context_query), 80).to_string()
+}
+
+fn truncate_str(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len {
+        s
     } else {
-        context_query.to_string()
+        let mut end = max_len;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
     }
 }
 

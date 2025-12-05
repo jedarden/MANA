@@ -238,3 +238,124 @@ fn get_mana_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     Ok(home.join(".mana"))
 }
+
+/// Debug: show sample patterns for inspection
+pub async fn debug_patterns(limit: usize) -> Result<()> {
+    let mana_dir = get_mana_dir()?;
+    let db_path = mana_dir.join("metadata.sqlite");
+
+    if !db_path.exists() {
+        println!("No database found.");
+        return Ok(());
+    }
+
+    let conn = Connection::open(&db_path)?;
+
+    println!("Sample Patterns (showing {} by type):", limit);
+    println!("{}", "=".repeat(60));
+
+    // Show patterns by type
+    for tool_type in &["failure", "Bash", "Edit", "Write", "Task"] {
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, tool_type, context_query, success_count, failure_count
+            FROM patterns
+            WHERE tool_type = ?1
+            ORDER BY (success_count - failure_count) DESC
+            LIMIT ?2
+            "#,
+        )?;
+
+        let patterns = stmt.query_map(params![tool_type, limit as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+
+        let patterns: Vec<_> = patterns.filter_map(|r| r.ok()).collect();
+        if patterns.is_empty() {
+            continue;
+        }
+
+        println!("\n[{}] ({} patterns):", tool_type, patterns.len());
+        println!("{}", "-".repeat(40));
+
+        for (id, _tool, context, success, failure) in patterns {
+            let score = success - failure;
+            // Show first 2 lines of context
+            let preview: String = context
+                .lines()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let preview = if preview.len() > 100 {
+                format!("{}...", &preview[..100])
+            } else {
+                preview
+            };
+            println!("  #{} [score: {}] {}", id, score, preview);
+        }
+    }
+
+    Ok(())
+}
+
+/// Prune low-quality patterns
+pub async fn prune_patterns(min_score: i64) -> Result<()> {
+    let mana_dir = get_mana_dir()?;
+    let db_path = mana_dir.join("metadata.sqlite");
+
+    if !db_path.exists() {
+        println!("No database found.");
+        return Ok(());
+    }
+
+    let store = PatternStore::open(&db_path)?;
+    let before = store.count()?;
+    let pruned = store.prune_low_score(min_score)?;
+    let after = store.count()?;
+
+    println!("Pruned {} patterns (score < {})", pruned, min_score);
+    println!("Patterns: {} -> {}", before, after);
+
+    Ok(())
+}
+
+/// Reset patterns and re-learn from logs
+pub async fn relearn() -> Result<()> {
+    use crate::learning::foreground_learn;
+
+    let mana_dir = get_mana_dir()?;
+    let db_path = mana_dir.join("metadata.sqlite");
+
+    if !db_path.exists() {
+        println!("No database found. Run 'mana init' first.");
+        return Ok(());
+    }
+
+    // Clear existing patterns
+    let conn = Connection::open(&db_path)?;
+    let deleted: i64 = conn.query_row("SELECT COUNT(*) FROM patterns", [], |r| r.get(0))?;
+    conn.execute("DELETE FROM patterns", [])?;
+    println!("Cleared {} existing patterns", deleted);
+
+    // Reset learning state
+    let state_path = mana_dir.join("learning-state.json");
+    if state_path.exists() {
+        std::fs::remove_file(&state_path)?;
+    }
+
+    // Re-learn from logs
+    println!("Re-learning from Claude logs...");
+    let result = foreground_learn(&[]).await?;
+    println!(
+        "Created {} patterns from {} trajectories in {}ms",
+        result.patterns_created, result.trajectories_processed, result.duration_ms
+    );
+
+    Ok(())
+}

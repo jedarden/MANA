@@ -108,14 +108,22 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
 fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     let mut patterns = Vec::new();
 
+    // Extract task category for concise context
+    let task_category = extract_task_category(&trajectory.user_query);
+
     // Create patterns for each tool call with rich context
     for tool_call in trajectory.tool_calls.iter().take(MAX_PATTERNS_PER_TRAJECTORY) {
         // Extract meaningful context from tool input
         let tool_context = extract_tool_context(&tool_call.tool_name, &tool_call.tool_input);
 
+        // Only create pattern if context is meaningful
+        if tool_context.len() < 10 {
+            continue;
+        }
+
         let context_query = format!(
             "Task: {}\nApproach: {} - {}\nOutcome: Success",
-            truncate(&trajectory.user_query, 150),
+            task_category,
             tool_call.tool_name,
             tool_context
         );
@@ -133,27 +141,7 @@ fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
         });
     }
 
-    // If no tool calls, create a pattern from the assistant response
-    if patterns.is_empty() && !trajectory.assistant_content.is_empty() {
-        let context_query = format!(
-            "Query: {}\nResponse approach: {}",
-            truncate(&trajectory.user_query, 200),
-            truncate(&trajectory.assistant_content, 300)
-        );
-
-        let pattern_hash = hash_string(&context_query);
-
-        patterns.push(Pattern {
-            id: 0,
-            pattern_hash,
-            tool_type: "response".to_string(),
-            context_query,
-            success_count: 1,
-            failure_count: 0,
-            embedding_id: None,
-        });
-    }
-
+    // If no tool calls, skip - we want actionable patterns only
     patterns
 }
 
@@ -246,9 +234,17 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             // Extract the key error message (first line or key phrase)
             let error_msg = extract_error_message(&result.content);
 
+            // Only create pattern if we have a meaningful error message
+            if error_msg.len() < 10 || error_msg == "AVOID:" {
+                continue;
+            }
+
+            // Extract task category (first few words)
+            let task_category = extract_task_category(&trajectory.user_query);
+
             let context_query = format!(
-                "Task: {}\nPitfall: {}\nAdvice: Check this approach doesn't hit the same error",
-                truncate(&trajectory.user_query, 120),
+                "Task: {}\nPitfall: {}\nAdvice: Verify this approach won't hit the same error",
+                task_category,
                 error_msg
             );
 
@@ -271,6 +267,19 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     }
 
     patterns
+}
+
+/// Extract a short task category from the user query
+fn extract_task_category(query: &str) -> String {
+    // Get first meaningful phrase (up to 50 chars)
+    let first_line = query.lines().next().unwrap_or(query);
+    let words: Vec<&str> = first_line.split_whitespace().take(8).collect();
+    let category = words.join(" ");
+    if category.len() > 60 {
+        format!("{}...", &category[..60])
+    } else {
+        category
+    }
 }
 
 /// Extract key error message from tool result
@@ -399,7 +408,10 @@ mod tests {
             assistant_content: "I've fixed the type error".into(),
             tool_calls: vec![ToolCall {
                 tool_name: "Edit".into(),
-                tool_input: serde_json::json!({"file_path": "main.rs"}),
+                tool_input: serde_json::json!({
+                    "file_path": "/project/src/main.rs",
+                    "old_string": "let x: String = 123;"
+                }),
             }],
             tool_results: vec![],
             verdict: Some(Verdict { success: true, confidence: 0.9 }),
@@ -408,7 +420,8 @@ mod tests {
         let patterns = extract_success_patterns(&trajectory);
         assert_eq!(patterns.len(), 1);
         assert_eq!(patterns[0].tool_type, "Edit");
-        assert!(patterns[0].context_query.contains("type error"));
+        assert!(patterns[0].context_query.contains("Edit"));
+        assert!(patterns[0].context_query.contains("main.rs"));
     }
 
     #[test]
