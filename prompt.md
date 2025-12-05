@@ -51,7 +51,16 @@ Enable pattern sharing across devpods, workspaces, and machines:
 1. `mana export --encrypted` / `mana import --merge` commands
 2. Git-based sync (simplest, works offline)
 3. S3/object storage sync (scalable)
-4. Supabase/PostgreSQL (team features, real-time)
+4. Self-hosted options (on-premise control)
+5. Supabase/PostgreSQL (team features, real-time)
+
+**Self-hosted backend options:**
+| Backend | Self-Hosted Option | Use Case |
+|---------|-------------------|----------|
+| Git | Gitea, GitLab CE, Forgejo | Air-gapped networks, simple setup |
+| S3 | MinIO, SeaweedFS, Garage | High-volume, S3-compatible API |
+| PostgreSQL | Self-managed PostgreSQL | Full control, custom extensions |
+| P2P | CRDT-based direct sync | Zero infrastructure, mesh network |
 
 ### 4.2 Security Requirements
 
@@ -77,13 +86,24 @@ fn sanitize_pattern(p: &Pattern) -> Pattern {
 
 ```bash
 # Sync management
-mana sync init --backend <s3|git|supabase>
+mana sync init --backend <s3|git|postgres|p2p>
 mana sync push                    # Upload local patterns (encrypted)
 mana sync pull                    # Download and merge remote
 mana sync status                  # Show sync state
 mana sync set-key                 # Configure encryption passphrase
 
-# Team features (requires Supabase backend)
+# Self-hosted setup
+mana sync init --backend git --url git@gitea.internal:org/patterns.git
+mana sync init --backend s3 --endpoint https://minio.internal:9000
+mana sync init --backend postgres --url postgres://user@db.internal/mana
+mana sync init --backend p2p --discover mdns  # Local network discovery
+
+# P2P direct sync (no central server)
+mana sync peer add <peer-id>      # Add trusted peer
+mana sync peer list               # List known peers
+mana sync peer remove <peer-id>   # Remove peer
+
+# Team features (requires postgres/supabase backend)
 mana team create <name>           # Create a team
 mana team invite <email>          # Invite team member
 mana team share <pattern-id>      # Share pattern with team
@@ -96,13 +116,16 @@ mana team list                    # List team patterns
 # ~/.mana/sync.toml
 [sync]
 enabled = true
-backend = "s3"              # s3 | git | supabase
+backend = "s3"              # s3 | git | postgres | p2p
 interval_minutes = 60
+
+# === Cloud Options ===
 
 [sync.s3]
 bucket = "org-mana-patterns"
 prefix = "patterns"
 region = "us-west-2"
+# endpoint = ""             # Leave empty for AWS
 
 [sync.git]
 remote = "git@github.com:org/mana-patterns.git"
@@ -112,9 +135,46 @@ branch = "main"
 url = "https://xyz.supabase.co"
 # Key from MANA_SUPABASE_KEY env var
 
+# === Self-Hosted Options ===
+
+[sync.s3_selfhosted]
+endpoint = "https://minio.internal:9000"
+bucket = "mana-patterns"
+access_key_env = "MINIO_ACCESS_KEY"
+secret_key_env = "MINIO_SECRET_KEY"
+use_path_style = true       # Required for MinIO
+
+[sync.git_selfhosted]
+remote = "git@gitea.internal:org/mana-patterns.git"
+branch = "main"
+# For Gitea/GitLab/Forgejo - same git protocol
+
+[sync.postgres]
+# Self-hosted PostgreSQL (or Supabase-compatible)
+url = "postgres://mana:pass@db.internal:5432/mana"
+# Or use environment variable
+url_env = "MANA_DATABASE_URL"
+ssl_mode = "require"        # require | prefer | disable
+
+[sync.p2p]
+# Peer-to-peer sync - no central server needed
+enabled = true
+discovery = "mdns"          # mdns | dht | static
+listen_port = 4222
+# Static peers (if not using discovery)
+peers = [
+    "peer-id-1@192.168.1.10:4222",
+    "peer-id-2@192.168.1.11:4222",
+]
+# CRDT conflict resolution
+merge_strategy = "crdt"     # crdt | last-write-wins | manual
+
+# === Security (applies to all backends) ===
+
 [sync.security]
 sanitize_paths = true
 redact_secrets = true
+encryption = "aes-256-gcm"
 # Passphrase from MANA_SYNC_KEY env var
 
 [sync.sharing]
@@ -122,7 +182,67 @@ visibility = "team"         # private | team | public
 team_id = "uuid"
 ```
 
-### 4.5 Advanced Features (Future)
+### 4.5 Self-Hosted Deployment Examples
+
+**MinIO (S3-compatible):**
+```bash
+# Deploy MinIO
+docker run -d --name minio \
+  -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=mana \
+  -e MINIO_ROOT_PASSWORD=secure-password \
+  -v /data/minio:/data \
+  minio/minio server /data --console-address ":9001"
+
+# Initialize MANA sync
+mana sync init --backend s3 \
+  --endpoint https://minio.internal:9000 \
+  --bucket mana-patterns
+```
+
+**Gitea (Git server):**
+```bash
+# Deploy Gitea
+docker run -d --name gitea \
+  -p 3000:3000 -p 2222:22 \
+  -v /data/gitea:/data \
+  gitea/gitea:latest
+
+# Create patterns repo in Gitea UI, then:
+mana sync init --backend git \
+  --url git@gitea.internal:org/mana-patterns.git
+```
+
+**PostgreSQL (direct):**
+```bash
+# Deploy PostgreSQL
+docker run -d --name postgres \
+  -p 5432:5432 \
+  -e POSTGRES_DB=mana \
+  -e POSTGRES_USER=mana \
+  -e POSTGRES_PASSWORD=secure-password \
+  -v /data/postgres:/var/lib/postgresql/data \
+  postgres:16
+
+# Initialize MANA sync with schema
+mana sync init --backend postgres \
+  --url postgres://mana:secure-password@db.internal:5432/mana
+```
+
+**P2P Mesh (zero infrastructure):**
+```bash
+# On each devpod/workspace - no central server needed
+mana sync init --backend p2p --discover mdns
+
+# Or with static peers (for cross-network)
+mana sync init --backend p2p \
+  --peers "peer1@10.0.0.1:4222,peer2@10.0.0.2:4222"
+
+# Patterns sync automatically via CRDT
+# Conflicts resolved without central authority
+```
+
+### 4.6 Advanced Features (Future)
 
 - **Pattern marketplace**: Curated public patterns for common tasks
 - **Smart merging**: ML-based conflict resolution
@@ -131,19 +251,21 @@ team_id = "uuid"
 - **Embedding sync**: Share vector indices for faster startup
 - **Real-time collaboration**: Live pattern suggestions from team activity
 
-### 4.6 Implementation Checklist
+### 4.7 Implementation Checklist
 
 - [ ] Add `src/sync/mod.rs` module
 - [ ] Implement pattern sanitization
 - [ ] Add AES-256-GCM encryption
 - [ ] Create export/import commands
-- [ ] Implement git backend
-- [ ] Implement S3 backend
+- [ ] Implement git backend (GitHub/GitLab/Gitea)
+- [ ] Implement S3 backend (AWS/MinIO/SeaweedFS)
+- [ ] Implement PostgreSQL backend (self-hosted + Supabase)
+- [ ] Implement P2P sync with CRDT
 - [ ] Add sync to daemon loop
-- [ ] Create team management (Supabase)
+- [ ] Create team management
 - [ ] Add row-level security policies
 - [ ] Write integration tests
-- [ ] Document sync setup
+- [ ] Document sync setup for each backend
 
 ---
 
