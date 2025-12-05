@@ -439,10 +439,22 @@ fn build_query(tool: &str, input: &ToolInputFields) -> String {
             let cmd = input.command.as_deref().unwrap_or("");
             let first_word = cmd.split_whitespace().next().unwrap_or("");
             let desc = input.description.as_deref().unwrap_or("");
+            // Include "Bash" keyword for better pattern matching with stored patterns
+            // Also include tech stack hints based on the command
+            let tech_hint = match first_word {
+                "npm" | "npx" | "yarn" | "pnpm" | "node" | "deno" | "bun" => "javascript npm node",
+                "cargo" | "rustc" | "rustup" => "rust cargo",
+                "pip" | "python" | "python3" | "pytest" | "poetry" | "uv" => "python pip",
+                "go" => "golang go",
+                "git" | "gh" => "git",
+                "docker" | "docker-compose" => "docker container",
+                "make" | "cmake" => "build make",
+                _ => "",
+            };
             if !desc.is_empty() {
-                format!("Command {} {}", first_word, desc)
+                format!("Bash {} {} {}", first_word, tech_hint, desc)
             } else {
-                format!("Command {}", first_word)
+                format!("Bash {} {}", first_word, tech_hint)
             }
         }
         "task" => format!(
