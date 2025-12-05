@@ -74,6 +74,7 @@ pub struct Team {
 
 /// Team member information
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct TeamMember {
     pub team_id: String,
     pub user_id: String,
@@ -663,6 +664,7 @@ pub async fn supabase_status(_mana_dir: &Path) -> Result<SupabaseStatus> {
 
 /// Supabase sync status information
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct SupabaseStatus {
     pub configured: bool,
     pub url: Option<String>,
@@ -777,6 +779,7 @@ CREATE TRIGGER update_patterns_updated_at
 // === Helper Functions ===
 
 /// Save Supabase sync configuration
+#[allow(dead_code)]
 pub fn save_supabase_config(mana_dir: &Path, url: &str) -> Result<()> {
     use crate::sync::{SyncConfig, SyncBackend, SecurityConfig as SyncSecurityConfig, save_sync_config};
 
@@ -797,6 +800,7 @@ pub fn save_supabase_config(mana_dir: &Path, url: &str) -> Result<()> {
 }
 
 /// Get a deterministic workspace ID from the MANA directory
+#[allow(dead_code)]
 fn get_workspace_id(mana_dir: &Path) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};

@@ -15,15 +15,19 @@ pub mod s3_backend;
 pub mod supabase_backend;
 pub mod p2p_backend;
 
+// Public API exports - some are used internally, some by main.rs
+#[allow(unused_imports)]
 pub use export::{export_patterns, import_patterns, export_patterns_to_vec, import_patterns_from_vec};
 pub use git_backend::{init_git_sync, push_patterns, pull_patterns, sync_status, save_git_config};
 pub use s3_backend::{init_s3_sync, push_patterns_s3, pull_patterns_s3, s3_status, save_s3_config, is_s3_available};
+#[allow(unused_imports)]
 pub use supabase_backend::{
     init_supabase_sync, push_patterns_supabase, pull_patterns_supabase,
     supabase_status, save_supabase_config, is_supabase_available, get_schema_sql,
     create_team, list_teams, invite_to_team, join_team, share_pattern,
     Team, TeamMember, SupabaseStatus, PullResult,
 };
+#[allow(unused_imports)]
 pub use p2p_backend::{
     init_p2p_sync, sync_with_peer, sync_with_all_peers, p2p_status,
     add_peer, remove_peer, list_peers, is_p2p_available,

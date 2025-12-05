@@ -17,6 +17,7 @@ use crate::sync::{
 
 /// Export format options
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ExportFormat {
     /// Plain JSON (readable, but not secure for sharing)
     Json,

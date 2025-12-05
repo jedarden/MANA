@@ -176,6 +176,7 @@ impl PatternStore {
     /// If a similar pattern exists (similarity > 0.85), we update it instead of creating a new one
     ///
     /// NOTE: This is slow for bulk operations. Use insert_fast() for learning.
+    #[allow(dead_code)]
     pub fn insert(&self, pattern: &Pattern) -> Result<i64> {
         use crate::storage::calculate_similarity;
 
@@ -265,6 +266,7 @@ impl PatternStore {
 
     /// Get patterns by tool type and command category
     /// This is more efficient for Bash patterns where we want cargo vs npm vs git
+    #[allow(dead_code)]
     pub fn get_by_tool_and_category(&self, tool_type: &str, category: Option<&str>, limit: usize) -> Result<Vec<Pattern>> {
         match category {
             Some(cat) => {

@@ -14,7 +14,8 @@ use crate::sync::export::{export_patterns, import_patterns, MergeStrategy};
 /// Git sync configuration
 #[derive(Debug, Clone)]
 pub struct GitSyncConfig {
-    /// Remote repository URL
+    /// Remote repository URL (stored for reference, git operations use local clone)
+    #[allow(dead_code)]
     pub remote: String,
     /// Branch to sync with
     pub branch: String,

@@ -34,15 +34,14 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::net::{SocketAddr, TcpStream};
+use std::path::Path;
 use std::io::{Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
-use crate::sync::{ExportablePattern, ExportBundle, ExportMetadata};
+use crate::sync::ExportablePattern;
 use crate::sync::export::{export_patterns_to_vec, import_patterns_from_vec, MergeStrategy};
 use crate::sync::SecurityConfig;
 
@@ -281,6 +280,7 @@ impl CRDTMap {
     }
 
     /// Delete a pattern (mark as tombstone)
+    #[allow(dead_code)]
     pub fn delete(&mut self, hash: &str) {
         if let Some(entry) = self.entries.get_mut(hash) {
             entry.deleted = true;
@@ -337,6 +337,7 @@ pub struct PeerInfo {
 
 /// P2P sync status
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct P2PStatus {
     /// Whether P2P sync is configured
     pub configured: bool,
@@ -473,7 +474,7 @@ pub fn sync_with_peer(
 
     // Load local CRDT state
     let mut local_crdt = load_crdt_state(mana_dir)?;
-    let config = load_p2p_config(mana_dir)?;
+    let _config = load_p2p_config(mana_dir)?;
 
     // Export current patterns to CRDT
     let local_patterns = export_patterns_to_vec(db_path, security)?;
@@ -540,6 +541,7 @@ pub fn sync_with_peer(
 
 /// Sync result
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SyncResult {
     /// Peer address
     pub peer: String,
@@ -594,11 +596,12 @@ pub fn sync_with_all_peers(
 }
 
 /// Handle incoming sync request (for running as a server)
+#[allow(dead_code)]
 pub fn handle_sync_request(
     mana_dir: &Path,
     db_path: &Path,
     security: &SecurityConfig,
-    request_version: HashMap<String, u64>,
+    _request_version: HashMap<String, u64>,
 ) -> Result<CRDTMap> {
     let mut local_crdt = load_crdt_state(mana_dir)?;
 
@@ -704,6 +707,7 @@ pub fn list_peers(mana_dir: &Path) -> Result<Vec<PeerInfo>> {
 }
 
 /// Check if P2P sync is available (has peers configured)
+#[allow(dead_code)]
 pub fn is_p2p_available(mana_dir: &Path) -> bool {
     load_p2p_config(mana_dir)
         .map(|c| c.enabled && !c.static_peers.is_empty())
