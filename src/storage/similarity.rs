@@ -97,8 +97,9 @@ fn detect_tech_stack(tokens: &[String]) -> TechStack {
             "go" | "golang" | "mod" => go_signals += 2,
             "goroutine" | "gomod" => go_signals += 1,
 
-            // Shell signals
-            "sh" | "bash" | "zsh" | "shell" => shell_signals += 1,
+            // Shell signals - give sh/bash 2 points since they're strong indicators
+            "sh" | "bash" => shell_signals += 2,
+            "zsh" | "shell" | "shebang" => shell_signals += 1,
 
             _ => {}
         }

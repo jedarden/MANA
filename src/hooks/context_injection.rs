@@ -16,6 +16,9 @@ use crate::storage::{PatternStore, Pattern, calculate_similarity};
 #[derive(Debug, Deserialize)]
 struct HookInput {
     tool_name: Option<String>,
+    /// Claude Code uses "input" as the nested key
+    input: Option<ToolInputFields>,
+    /// Legacy: support "tool_input" for backwards compatibility
     tool_input: Option<ToolInputFields>,
     // Also support flat structure for backwards compatibility
     #[serde(flatten)]
@@ -48,9 +51,11 @@ const INJECTION_TIMEOUT_MS: u128 = 10;
 /// Minimum relevance score to include a pattern (0 = no filtering)
 const MIN_RELEVANCE_SCORE: usize = 0;
 
-/// Minimum similarity score for patterns (0.1 = very loose, allows fallback to generic patterns)
-/// Lower threshold to ensure patterns are shown even when tech stack doesn't exactly match
-const MIN_TECH_STACK_SIMILARITY: f64 = 0.1;
+/// Minimum similarity score for patterns after tech stack modifier applied
+/// Set to 0.35 to effectively filter out mismatched tech stacks (0.3x penalty)
+/// A pattern needs raw similarity of ~1.17 to pass with tech mismatch (impossible)
+/// This ensures we don't show shell patterns for Rust queries, etc.
+const MIN_TECH_STACK_SIMILARITY: f64 = 0.35;
 
 /// Inject context from ReasoningBank based on tool input
 ///
@@ -83,8 +88,10 @@ pub async fn inject_context(tool: &str) -> Result<()> {
         }
     };
 
-    // Extract fields from either nested tool_input or flat structure
-    let fields = if let Some(ref ti) = hook_input.tool_input {
+    // Extract fields from nested input (Claude Code), tool_input (legacy), or flat structure
+    let fields = if let Some(ref inp) = hook_input.input {
+        inp
+    } else if let Some(ref ti) = hook_input.tool_input {
         ti
     } else {
         &hook_input.flat
