@@ -67,7 +67,7 @@ pub fn encrypt_data(plaintext: &[u8], passphrase: &str) -> Result<EncryptedData>
     // Generate random nonce
     let mut nonce_bytes = [0u8; NONCE_LENGTH];
     OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from_slice(nonce_bytes.as_slice());
 
     // Encrypt
     let ciphertext = cipher
@@ -76,8 +76,8 @@ pub fn encrypt_data(plaintext: &[u8], passphrase: &str) -> Result<EncryptedData>
 
     Ok(EncryptedData {
         ciphertext: BASE64.encode(&ciphertext),
-        nonce: BASE64.encode(&nonce_bytes),
-        salt: BASE64.encode(&salt),
+        nonce: BASE64.encode(nonce_bytes),
+        salt: BASE64.encode(salt),
         version: 1,
     })
 }
@@ -105,7 +105,7 @@ pub fn decrypt_data(encrypted: &EncryptedData, passphrase: &str) -> Result<Vec<u
     // Decode nonce
     let nonce_bytes = BASE64.decode(&encrypted.nonce)
         .map_err(|e| anyhow!("Invalid nonce encoding: {}", e))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from_slice(nonce_bytes.as_slice());
 
     // Decode ciphertext
     let ciphertext = BASE64.decode(&encrypted.ciphertext)
@@ -136,7 +136,7 @@ pub fn decrypt_string(encrypted: &EncryptedData, passphrase: &str) -> Result<Str
 pub fn generate_passphrase() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    BASE64.encode(&bytes)
+    BASE64.encode(bytes)
 }
 
 /// Hash a workspace identifier for anonymization

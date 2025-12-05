@@ -40,7 +40,7 @@ use tracing::{debug, info};
 
 /// Reflection engine state
 #[allow(dead_code)] // Reserved for daemon mode state tracking
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReflectionState {
     /// Number of trajectories queued for reflection
     pub queued_trajectories: usize,
@@ -50,17 +50,6 @@ pub struct ReflectionState {
     pub last_cycle_trajectories: usize,
     /// Number of verdicts produced in last cycle
     pub last_cycle_verdicts: usize,
-}
-
-impl Default for ReflectionState {
-    fn default() -> Self {
-        Self {
-            queued_trajectories: 0,
-            last_reflection: None,
-            last_cycle_trajectories: 0,
-            last_cycle_verdicts: 0,
-        }
-    }
 }
 
 /// Reflection engine configuration

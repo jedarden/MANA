@@ -150,7 +150,7 @@ impl EmbeddingStore {
         };
 
         Ok(EmbeddingStatus {
-            initialized: self.index.len() > 0 || index_path.exists(),
+            initialized: !self.index.is_empty() || index_path.exists(),
             model_name: self.model.name().to_string(),
             model_version: self.model.version().to_string(),
             dimensions: self.config.dimensions,

@@ -477,10 +477,10 @@ impl TrajectoryAnalyzer {
                 }
             }
             // Moderate match threshold (reflection-specific, more lenient)
-            else if similarity > 0.15 {
-                if best_moderate.is_none() || similarity > best_moderate.as_ref().unwrap().1 {
-                    best_moderate = Some((pattern.id, similarity));
-                }
+            else if similarity > 0.15
+                && (best_moderate.is_none() || similarity > best_moderate.as_ref().unwrap().1)
+            {
+                best_moderate = Some((pattern.id, similarity));
             }
         }
 
