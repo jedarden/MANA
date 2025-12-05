@@ -121,6 +121,7 @@ while true; do
         # Pipe through parser for human-readable output
         claude --dangerously-skip-permissions \
                --output-format stream-json \
+               --verbose \
                --print \
                -p "$PROMPT" \
                2>&1 | tee -a "$SESSION_LOG" | "$PARSER_SCRIPT"
@@ -128,6 +129,7 @@ while true; do
         # Raw JSON output
         claude --dangerously-skip-permissions \
                --output-format stream-json \
+               --verbose \
                --print \
                -p "$PROMPT" \
                2>&1 | tee -a "$SESSION_LOG"
