@@ -72,9 +72,14 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
+    // Initialize logging - for inject command, silence logs unless verbose
+    // because output goes through stdout hooks
+    let is_inject = matches!(cli.command, Commands::Inject { .. });
     let filter = if cli.verbose {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"))
+    } else if is_inject {
+        // Silent for inject to avoid polluting hook stdout
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
     } else {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
     };
@@ -82,11 +87,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_writer(std::io::stderr)  // Always write logs to stderr, not stdout
         .init();
 
     match cli.command {
         Commands::Inject { tool } => {
-            info!("Injecting context for tool: {}", tool);
             hooks::inject_context(&tool).await?;
         }
         Commands::SessionEnd => {

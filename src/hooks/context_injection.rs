@@ -123,10 +123,9 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     // Open pattern store
     let store = PatternStore::open(&db_path)?;
 
-    // Map tool argument to database tool_types (may need multiple)
-    // Prioritize exact matches, then broader matches
-    let tool_types: Vec<&str> = match tool {
-        "edit" => vec!["Edit", "Write", "MultiEdit", "Read"],  // Include related file operations
+    // Map tool argument to database tool_types - prioritize exact matches
+    let primary_types: Vec<&str> = match tool {
+        "edit" => vec!["Edit", "Write", "MultiEdit"],
         "bash" => vec!["Bash"],
         "task" => vec!["Task"],
         "read" => vec!["Read", "Glob", "Grep"],
@@ -134,12 +133,13 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         _ => vec![tool],
     };
 
-    // Get relevant patterns for these tool types
+    // Get relevant patterns for primary tool types only
     let mut patterns: Vec<Pattern> = Vec::new();
-    for tool_type in &tool_types {
+    for tool_type in &primary_types {
         let mut type_patterns = store.get_by_tool(tool_type, MAX_PATTERNS * 2)?;
         patterns.append(&mut type_patterns);
     }
+
     // Sort by score and truncate
     patterns.sort_by(|a, b| {
         let a_score = a.success_count - a.failure_count;
@@ -191,15 +191,9 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         return format_success_patterns(&patterns);
     }
 
-    // If no tool-specific patterns found, try to get ANY successful patterns
-    // (better than showing nothing)
-    let fallback_patterns = store.get_top_patterns(MAX_PATTERNS)?;
-    if !fallback_patterns.is_empty() {
-        debug!("Using {} fallback patterns", fallback_patterns.len());
-        return format_success_patterns(&fallback_patterns);
-    }
-
-    // No patterns available at all
+    // No tool-specific patterns found - don't show unrelated patterns
+    // (showing unrelated context is worse than no context)
+    debug!("No patterns found for tool type: {}", tool);
     Ok(ContextInjection {
         context_block: String::new(),
         patterns_used: vec![],
