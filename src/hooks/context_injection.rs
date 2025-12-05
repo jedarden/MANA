@@ -231,20 +231,30 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         patterns.truncate(MAX_PATTERNS);
     }
 
-    // If similarity filtering returned empty, don't fall back to potentially irrelevant patterns.
-    // It's better to show no context than wrong context that could mislead the model.
-    // The filtering likely removed patterns due to tech stack mismatch (e.g., shell patterns for Python query)
+    // If similarity filtering returned empty due to tech stack mismatch,
+    // try to provide generic helpful patterns with a caveat
     if patterns.is_empty() && !query.is_empty() {
-        debug!("Similarity filtering returned 0 patterns - no relevant context for this query");
-        // Return empty - showing irrelevant patterns is worse than no patterns
+        debug!("Similarity filtering returned 0 patterns - trying generic fallback");
+
+        // Get top patterns without tech stack filtering for generic guidance
+        // These are high-quality patterns that might still be helpful
+        let fallback_patterns: Vec<Pattern> = store.get_top_patterns(PATTERNS_TO_SCORE)?
+            .into_iter()
+            .filter(|p| primary_types.iter().any(|t| p.tool_type.eq_ignore_ascii_case(t)))
+            .take(MAX_PATTERNS)
+            .collect();
+
+        if !fallback_patterns.is_empty() {
+            debug!("Using {} generic fallback patterns", fallback_patterns.len());
+            return format_generic_patterns(&fallback_patterns);
+        }
     }
 
     if !patterns.is_empty() {
         return format_success_patterns(&patterns);
     }
 
-    // No tool-specific patterns found - don't show unrelated patterns
-    // (showing unrelated context is worse than no context)
+    // No patterns found at all
     debug!("No patterns found for tool type: {}", tool);
     Ok(ContextInjection {
         context_block: String::new(),
@@ -267,6 +277,46 @@ fn format_success_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
         let insight = extract_insight(&pattern.context_query);
 
         // Skip duplicates in output (compare full insight, lowercased)
+        let normalized = insight.to_lowercase();
+        if seen_insights.contains(&normalized) {
+            continue;
+        }
+        seen_insights.insert(normalized);
+
+        let score = pattern.success_count - pattern.failure_count;
+        let confidence = if pattern.success_count + pattern.failure_count > 0 {
+            (pattern.success_count as f64 / (pattern.success_count + pattern.failure_count) as f64) * 100.0
+        } else {
+            50.0
+        };
+
+        context_lines.push(format!("- **{}** (score: {}, {:.0}% success rate)",
+            pattern.tool_type, score, confidence));
+        context_lines.push(format!("  {}", insight));
+        context_lines.push(String::new());
+
+        pattern_ids.push(pattern.id);
+    }
+
+    Ok(ContextInjection {
+        context_block: context_lines.join("\n"),
+        patterns_used: pattern_ids,
+    })
+}
+
+/// Format generic patterns as fallback (when no tech-specific match)
+fn format_generic_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
+    let mut context_lines = Vec::new();
+    let mut pattern_ids = Vec::new();
+    let mut seen_insights: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    context_lines.push("**General patterns (no tech-specific matches found):**".to_string());
+    context_lines.push(String::new());
+
+    for pattern in patterns {
+        let insight = extract_insight(&pattern.context_query);
+
+        // Skip duplicates
         let normalized = insight.to_lowercase();
         if seen_insights.contains(&normalized) {
             continue;
