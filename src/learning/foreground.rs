@@ -60,36 +60,41 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
 
     info!("Parsed {} trajectories total", all_trajectories.len());
 
-    // Partition by verdict
-    let (successful, failed): (Vec<_>, Vec<_>) = all_trajectories
-        .into_iter()
-        .partition(|t| t.verdict.map(|v| v.success).unwrap_or(false));
+    // IMPROVED: Extract patterns from ALL trajectories, not just fully-successful ones
+    // This allows learning from individual successful tool calls within mixed sessions
+    let mut edit_count = 0;
+    let mut bash_count = 0;
 
-    info!("{} successful, {} failed trajectories", successful.len(), failed.len());
-
-    // Extract patterns from successful trajectories
-    for trajectory in successful.iter().take(50) {  // Limit to avoid timeout
-        let patterns = extract_success_patterns(trajectory);
-        for pattern in patterns {
-            match store.insert(&pattern) {
-                Ok(_) => result.patterns_created += 1,
+    for trajectory in all_trajectories.iter().take(100) {  // Process more trajectories
+        // Extract patterns from individual successful tool calls
+        let patterns = extract_per_tool_patterns(trajectory);
+        for pattern in &patterns {
+            match store.insert(pattern) {
+                Ok(_) => {
+                    result.patterns_created += 1;
+                    match pattern.tool_type.as_str() {
+                        "Edit" => edit_count += 1,
+                        "Bash" => bash_count += 1,
+                        _ => {}
+                    }
+                }
                 Err(e) => debug!("Failed to insert pattern: {}", e),
             }
         }
+
+        // Also extract failure patterns from error results
+        let failure_patterns = extract_failure_patterns(trajectory);
+        for pattern in failure_patterns {
+            match store.insert(&pattern) {
+                Ok(_) => result.patterns_created += 1,
+                Err(e) => debug!("Failed to insert failure pattern: {}", e),
+            }
+        }
+
         result.trajectories_processed += 1;
     }
 
-    // Extract failure lessons (what to avoid)
-    for trajectory in failed.iter().take(20) {  // Limit to avoid timeout
-        let patterns = extract_failure_patterns(trajectory);
-        for pattern in patterns {
-            match store.insert(&pattern) {
-                Ok(_) => result.patterns_created += 1,
-                Err(e) => debug!("Failed to insert pattern: {}", e),
-            }
-        }
-        result.trajectories_processed += 1;
-    }
+    info!("Extracted {} Edit patterns, {} Bash patterns", edit_count, bash_count);
 
     // Log learning event to database
     log_learning_event(&db_path, &result)?;
@@ -102,6 +107,62 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
     );
 
     Ok(result)
+}
+
+/// Extract patterns from individual tool calls regardless of overall trajectory success
+/// This allows learning from successful Edit/Write calls in mixed sessions
+fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
+    let mut patterns = Vec::new();
+
+    // Build a map of tool_use_id -> error status from results
+    let error_tool_ids: std::collections::HashSet<String> = trajectory.tool_results
+        .iter()
+        .filter(|r| r.is_error ||
+                r.content.to_lowercase().contains("error:") ||
+                r.content.to_lowercase().contains("failed:"))
+        .map(|r| r.tool_use_id.clone())
+        .collect();
+
+    // Extract task category for context
+    let task_category = extract_task_category(&trajectory.user_query);
+
+    // Create patterns for each tool call that didn't result in an error
+    for tool_call in trajectory.tool_calls.iter().take(MAX_PATTERNS_PER_TRAJECTORY * 2) {
+        // For tools that produce patterns we care about
+        match tool_call.tool_name.as_str() {
+            "Edit" | "Write" | "MultiEdit" | "Bash" | "Task" | "Read" | "Grep" | "Glob" => {
+                // Extract meaningful context from tool input
+                let tool_context = extract_tool_context(&tool_call.tool_name, &tool_call.tool_input);
+
+                // Only create pattern if context is meaningful
+                if tool_context.len() < 10 {
+                    continue;
+                }
+
+                let context_query = format!(
+                    "Task: {}\nApproach: {} - {}\nOutcome: Success",
+                    task_category,
+                    tool_call.tool_name,
+                    tool_context
+                );
+
+                let pattern_hash = hash_string(&context_query);
+
+                patterns.push(Pattern {
+                    id: 0,  // Will be set by database
+                    pattern_hash,
+                    tool_type: tool_call.tool_name.clone(),
+                    context_query,
+                    success_count: 1,
+                    failure_count: 0,
+                    embedding_id: None,
+                });
+            }
+            _ => continue,
+        }
+    }
+
+    patterns
 }
 
 /// Extract patterns from successful trajectories
