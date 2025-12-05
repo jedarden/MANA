@@ -45,6 +45,10 @@ struct ContextInjection {
 /// Maximum patterns to inject per context (to avoid overwhelming Claude)
 const MAX_PATTERNS: usize = 3;
 
+/// Number of patterns to retrieve for similarity scoring (before filtering)
+/// Higher = better relevance matching but slightly slower
+const PATTERNS_TO_SCORE: usize = 20;
+
 /// Maximum time budget for injection in milliseconds
 const INJECTION_TIMEOUT_MS: u128 = 10;
 
@@ -165,19 +169,20 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     };
 
     // Get relevant patterns for primary tool types only
+    // Retrieve more patterns than we need so similarity scoring can find the best matches
     let mut patterns: Vec<Pattern> = Vec::new();
     for tool_type in &primary_types {
-        let mut type_patterns = store.get_by_tool(tool_type, MAX_PATTERNS * 2)?;
+        let mut type_patterns = store.get_by_tool(tool_type, PATTERNS_TO_SCORE)?;
         patterns.append(&mut type_patterns);
     }
 
-    // Sort by score and truncate
+    // Don't truncate here - let similarity scoring find the best matches
+    // Sort by score only as a tie-breaker for equal similarity
     patterns.sort_by(|a, b| {
         let a_score = a.success_count - a.failure_count;
         let b_score = b.success_count - b.failure_count;
         b_score.cmp(&a_score)
     });
-    patterns.truncate(MAX_PATTERNS * 2);
 
     // Deduplicate patterns by extracting unique context insights
     let mut seen_insights: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -195,6 +200,8 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
 
     // Score patterns by semantic similarity if query is not empty
     if !query.is_empty() {
+        debug!("Scoring {} patterns for query: {}", patterns.len(), query);
+
         // Use TF-IDF style similarity scoring for better relevance
         let mut scored_patterns: Vec<(Pattern, f64)> = patterns
             .into_iter()
@@ -203,6 +210,9 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
                 // Combine similarity with success score for final ranking
                 let success_score = (p.success_count - p.failure_count) as f64;
                 let combined_score = similarity * 0.6 + (success_score.max(0.0) / 10.0) * 0.4;
+                debug!("  Pattern [{}]: sim={:.3}, combined={:.3}, context: {}",
+                    p.tool_type, similarity, combined_score,
+                    p.context_query.chars().take(60).collect::<String>());
                 (p, similarity, combined_score)
             })
             // Filter out patterns with very low similarity (likely tech stack mismatch)

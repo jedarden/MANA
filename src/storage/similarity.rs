@@ -360,6 +360,18 @@ mod tests {
     }
 
     #[test]
+    fn test_js_pattern_similarity() {
+        let query = "Editing js javascript npm node package file server.js";
+        let pattern = "Task: Create API endpoint | Approach: Write - js javascript npm node writing to upload.js";
+
+        let score = calculate_similarity(query, pattern);
+        println!("JS pattern similarity score: {}", score);
+
+        // This should have a reasonable score due to tech stack match (1.5x boost)
+        assert!(score >= 0.35, "JS pattern should match with score >= 0.35, got {}", score);
+    }
+
+    #[test]
     fn test_shell_edit_matching() {
         // Shell file query should match shell file patterns
         let query = "Editing sh shell bash file test.sh";
