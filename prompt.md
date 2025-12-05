@@ -525,19 +525,143 @@ When updating GitHub issues or repository documentation:
 ### Step 7: Create Release (if warranted)
 
 Create a release when:
-- Major feature complete
+- Major feature complete (bump minor version: 0.1.0 → 0.2.0)
 - Binary is stable and tested
 - Significant performance improvement
+- Breaking changes (bump major version: 0.x.x → 1.0.0)
+- Bug fixes only (bump patch version: 0.1.0 → 0.1.1)
+
+#### Release Process
 
 ```bash
-# Build release binary
-cargo build --release
+# 1. Update version in Cargo.toml
+# Edit Cargo.toml: version = "X.Y.Z"
 
-# Create GitHub release with binary
+# 2. Build release binary with optimizations
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+
+# 3. Verify the build
+./target/release/mana --version
+./target/release/mana bench
+
+# 4. Run tests
+cargo test --release
+
+# 5. Generate release notes
+PREV_TAG=$(gh release view --json tagName -q .tagName 2>/dev/null || echo "")
+if [ -n "$PREV_TAG" ]; then
+  CHANGES=$(git log ${PREV_TAG}..HEAD --oneline)
+else
+  CHANGES=$(git log --oneline -20)
+fi
+
+# 6. Create the release with binary asset
+gh release create vX.Y.Z \
+  --title "MANA vX.Y.Z - Brief Description" \
+  --notes "$(cat <<EOF
+## What's New
+
+### ✨ Features
+- Feature 1 description
+- Feature 2 description
+
+### 🐛 Bug Fixes
+- Fix 1 description
+
+### ⚡ Performance
+- Performance improvement description
+
+### 📊 Benchmarks
+| Metric | Value | Target |
+|--------|-------|--------|
+| Context injection | Xms | <10ms |
+| Pattern search | Xms | <0.5ms |
+
+---
+
+## Installation
+
+\`\`\`bash
+# Download and install
+gh release download vX.Y.Z --repo jedarden/MANA -p mana -D ~/.mana
+chmod +x ~/.mana/mana
+
+# Or update existing installation
+mana update --force
+\`\`\`
+
+---
+
+**Full Changelog**: https://github.com/jedarden/MANA/compare/${PREV_TAG}...vX.Y.Z
+EOF
+)" \
+  target/release/mana
+
+# 7. Verify the release
+gh release view vX.Y.Z
+```
+
+#### Version Bumping Guide
+
+| Change Type | Version Bump | Example |
+|-------------|--------------|---------|
+| Breaking API change | Major | 0.1.0 → 1.0.0 |
+| New feature (backward compatible) | Minor | 0.1.0 → 0.2.0 |
+| Bug fix, performance improvement | Patch | 0.1.0 → 0.1.1 |
+| Pre-release | Suffix | 0.2.0-alpha.1 |
+
+#### Release Checklist
+
+Before creating a release, verify:
+
+- [ ] Version updated in `Cargo.toml`
+- [ ] `cargo build --release` succeeds
+- [ ] `cargo test --release` passes
+- [ ] `mana bench` shows all benchmarks passing
+- [ ] Binary size is reasonable (<10MB)
+- [ ] No debug symbols in release binary
+- [ ] Release notes document all changes
+- [ ] Breaking changes are clearly marked
+
+#### Binary Naming Convention (Future Multi-Platform)
+
+When adding cross-compilation:
+
+```bash
+# Build for multiple platforms
+cargo build --release --target x86_64-unknown-linux-gnu
+cargo build --release --target x86_64-apple-darwin
+cargo build --release --target aarch64-apple-darwin
+
+# Create release with multiple binaries
 gh release create vX.Y.Z \
   --title "MANA vX.Y.Z" \
-  --notes "Release notes here" \
-  target/release/mana
+  --notes "..." \
+  target/x86_64-unknown-linux-gnu/release/mana#mana-linux-x64 \
+  target/x86_64-apple-darwin/release/mana#mana-darwin-x64 \
+  target/aarch64-apple-darwin/release/mana#mana-darwin-arm64
+```
+
+#### Auto-Update Flow
+
+Once a release is published, users can update via:
+
+```bash
+# Check for updates
+mana update
+
+# Output:
+# Update available!
+#   Current version: 0.1.0
+#   Latest version:  0.2.0
+# Run 'mana update --force' to install the update.
+
+# Install the update
+mana update --force
+
+# Output:
+# Downloading MANA 0.2.0...
+# Successfully updated to: mana 0.2.0
 ```
 
 ---
