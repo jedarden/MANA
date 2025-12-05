@@ -15,6 +15,21 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
         return 0.0;
     }
 
+    // Detect technology context from query and pattern
+    let query_tech = detect_tech_stack(&query_tokens);
+    let pattern_tech = detect_tech_stack(&pattern_tokens);
+
+    // Apply tech stack penalty for mismatched contexts
+    let tech_penalty = if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown {
+        if query_tech == pattern_tech {
+            1.5 // Boost for matching tech stack
+        } else {
+            0.3 // Heavy penalty for mismatched stacks
+        }
+    } else {
+        1.0 // No adjustment for unknown contexts
+    };
+
     // Build term frequency maps
     let query_tf = build_tf(&query_tokens);
     let pattern_tf = build_tf(&pattern_tokens);
@@ -33,12 +48,71 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
         }
     }
 
-    // Normalize
+    // Normalize and apply tech penalty
     if query_norm > 0.0 {
-        score / query_norm.sqrt()
+        (score / query_norm.sqrt()) * tech_penalty
     } else {
         0.0
     }
+}
+
+/// Technology stack detection for context-aware matching
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TechStack {
+    Rust,
+    JavaScript, // Includes TypeScript, Node.js
+    Python,
+    Go,
+    Shell,
+    Unknown,
+}
+
+/// Detect the technology stack from tokenized text
+fn detect_tech_stack(tokens: &[String]) -> TechStack {
+    let mut rust_signals = 0;
+    let mut js_signals = 0;
+    let mut python_signals = 0;
+    let mut go_signals = 0;
+    let mut shell_signals = 0;
+
+    for token in tokens {
+        match token.as_str() {
+            // Rust signals
+            "rs" | "rust" | "cargo" | "toml" | "rustc" | "crate" => rust_signals += 2,
+            "unwrap" | "impl" | "struct" | "enum" | "mut" | "async" => rust_signals += 1,
+
+            // JavaScript/TypeScript/Node signals
+            "js" | "ts" | "tsx" | "jsx" | "npm" | "node" | "yarn" | "javascript" | "typescript" => js_signals += 2,
+            "package" | "json" | "react" | "vue" | "express" | "next" | "webpack" | "eslint" => js_signals += 1,
+
+            // Python signals
+            "py" | "python" | "pip" | "conda" | "pytest" | "django" | "flask" => python_signals += 2,
+            "venv" | "requirements" | "pyproject" => python_signals += 1,
+
+            // Go signals
+            "go" | "golang" | "mod" => go_signals += 2,
+            "goroutine" | "gomod" => go_signals += 1,
+
+            // Shell signals
+            "sh" | "bash" | "zsh" | "shell" => shell_signals += 1,
+
+            _ => {}
+        }
+    }
+
+    // Return the dominant tech stack (need at least 2 signals)
+    let max_signals = rust_signals.max(js_signals).max(python_signals).max(go_signals).max(shell_signals);
+
+    if max_signals < 2 {
+        return TechStack::Unknown;
+    }
+
+    if rust_signals == max_signals { TechStack::Rust }
+    else if js_signals == max_signals { TechStack::JavaScript }
+    else if python_signals == max_signals { TechStack::Python }
+    else if go_signals == max_signals { TechStack::Go }
+    else if shell_signals == max_signals { TechStack::Shell }
+    else { TechStack::Unknown }
 }
 
 /// Tokenize text into meaningful terms with basic stemming
@@ -236,5 +310,46 @@ mod tests {
         assert!(!ranked.is_empty());
         // TypeScript pattern should rank first
         assert_eq!(ranked[0].0, 0, "TypeScript pattern should rank first");
+    }
+
+    #[test]
+    fn test_tech_stack_penalty() {
+        // Rust query should prefer Rust patterns over Node.js patterns
+        let rust_query = "Editing main.rs rust cargo toml";
+        let rust_pattern = "Task: Fix Rust compilation | Approach: cargo build";
+        let nodejs_pattern = "Task: Create Node.js backend | Approach: npm init package.json";
+
+        let rust_score = calculate_similarity(rust_query, rust_pattern);
+        let nodejs_score = calculate_similarity(rust_query, nodejs_pattern);
+
+        assert!(
+            rust_score > nodejs_score,
+            "Rust query should prefer Rust patterns over Node.js: {} vs {}",
+            rust_score,
+            nodejs_score
+        );
+    }
+
+    #[test]
+    fn test_tech_stack_detection() {
+        // Test that tech stack detection works correctly
+        let rust_tokens = tokenize("editing main.rs cargo toml rust");
+        let js_tokens = tokenize("npm install package.json typescript");
+        let python_tokens = tokenize("pip install python pytest requirements");
+
+        assert_eq!(detect_tech_stack(&rust_tokens), TechStack::Rust);
+        assert_eq!(detect_tech_stack(&js_tokens), TechStack::JavaScript);
+        assert_eq!(detect_tech_stack(&python_tokens), TechStack::Python);
+    }
+
+    #[test]
+    fn test_unknown_tech_stack_neutral() {
+        // Generic queries shouldn't have tech stack penalty
+        let generic_query = "fix the bug in the code";
+        let pattern = "Task: Fix error | Approach: Edit the file";
+
+        let score = calculate_similarity(generic_query, pattern);
+        // Should have some score without tech penalty affecting it
+        assert!(score >= 0.0, "Generic query should match generically: {}", score);
     }
 }

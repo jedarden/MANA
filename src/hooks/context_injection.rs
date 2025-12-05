@@ -416,25 +416,25 @@ fn build_query(tool: &str, input: &ToolInput) -> String {
             let path = input.file_path.as_deref().unwrap_or("unknown");
             let ext = extract_extension(Some(path));
             let filename = extract_filename(path);
-            // Include extension, filename, and language hints for better matching
-            let lang_hint = match ext {
-                "rs" => "rust",
-                "ts" | "tsx" => "typescript",
-                "js" | "jsx" => "javascript",
-                "py" => "python",
-                "go" => "golang",
-                "rb" => "ruby",
-                "java" => "java",
-                "cpp" | "cc" | "cxx" => "cpp",
-                "c" | "h" => "c",
-                "md" => "markdown",
-                "json" => "json",
-                "yaml" | "yml" => "yaml",
-                "toml" => "toml",
-                "sh" | "bash" => "shell script",
-                _ => ext,
+            // Include multiple tech signals for robust stack detection
+            let (lang_hint, extra_signals) = match ext {
+                "rs" => ("rust", "cargo toml crate"),
+                "ts" | "tsx" => ("typescript", "npm node package"),
+                "js" | "jsx" => ("javascript", "npm node package"),
+                "py" => ("python", "pip pytest"),
+                "go" => ("golang", "mod"),
+                "rb" => ("ruby", "gem"),
+                "java" => ("java", "maven gradle"),
+                "cpp" | "cc" | "cxx" => ("cpp", "cmake"),
+                "c" | "h" => ("c", "cmake"),
+                "md" => ("markdown", ""),
+                "json" => ("json", "npm node package"),  // JSON often indicates Node.js
+                "yaml" | "yml" => ("yaml", ""),
+                "toml" => ("toml", "cargo rust"),  // TOML strongly indicates Rust
+                "sh" | "bash" => ("shell", "bash"),
+                _ => (ext, ""),
             };
-            format!("Editing {} {} file {}", ext, lang_hint, filename)
+            format!("Editing {} {} {} file {}", ext, lang_hint, extra_signals, filename)
         }
         "bash" => {
             let cmd = input.command.as_deref().unwrap_or("");
