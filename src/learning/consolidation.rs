@@ -26,6 +26,12 @@ pub async fn consolidate() -> Result<()> {
         return Ok(());
     }
 
+    // Clean up invalid causal edges first (self-referential, orphaned)
+    let cleaned = cleanup_causal_edges(&db_path)?;
+    if cleaned > 0 {
+        info!("Cleaned up {} invalid causal edges", cleaned);
+    }
+
     // Run consolidation tasks
     let merged = merge_similar_patterns(&db_path)?;
     let decayed = decay_unused_patterns(&db_path)?;
@@ -39,6 +45,16 @@ pub async fn consolidate() -> Result<()> {
         merged, decayed, pruned, skills
     );
     Ok(())
+}
+
+/// Clean up invalid causal edges (self-referential, orphaned)
+fn cleanup_causal_edges(db_path: &PathBuf) -> Result<usize> {
+    use crate::storage::CausalStore;
+
+    let store = CausalStore::open(db_path)?;
+    let self_ref = store.cleanup_self_referential()?;
+    let orphaned = store.cleanup_orphaned()?;
+    Ok(self_ref + orphaned)
 }
 
 /// Consolidate patterns into skills

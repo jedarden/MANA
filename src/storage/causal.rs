@@ -49,6 +49,12 @@ impl CausalStore {
         pattern_b: i64,
         both_succeeded: bool,
     ) -> Result<()> {
+        // Skip self-referential edges - a pattern cannot conflict with itself
+        if pattern_a == pattern_b {
+            debug!("Skipping self-referential causal edge for pattern {}", pattern_a);
+            return Ok(());
+        }
+
         // Ensure consistent ordering (smaller ID first)
         let (id_a, id_b) = if pattern_a < pattern_b {
             (pattern_a, pattern_b)
@@ -161,7 +167,6 @@ impl CausalStore {
     }
 
     /// Clean up edges referencing deleted patterns
-    #[allow(dead_code)]
     pub fn cleanup_orphaned(&self) -> Result<usize> {
         let deleted = self.conn.execute(
             r#"
@@ -171,6 +176,18 @@ impl CausalStore {
             "#,
             [],
         )?;
+        Ok(deleted)
+    }
+
+    /// Clean up invalid self-referential edges (pattern conflicting with itself)
+    pub fn cleanup_self_referential(&self) -> Result<usize> {
+        let deleted = self.conn.execute(
+            "DELETE FROM causal_edges WHERE pattern_a_id = pattern_b_id",
+            [],
+        )?;
+        if deleted > 0 {
+            debug!("Removed {} self-referential causal edges", deleted);
+        }
         Ok(deleted)
     }
 }
