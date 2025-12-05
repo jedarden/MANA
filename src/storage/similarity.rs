@@ -2,13 +2,23 @@
 //!
 //! Uses TF-IDF style scoring for fast, effective similarity matching
 //! without requiring external ML libraries.
+//!
+//! Optimized for sub-millisecond performance on small pattern sets.
 
 use std::collections::HashMap;
 
 /// Calculate similarity between query and patterns using TF-IDF-like scoring
 /// Returns a score between 0.0 and 1.0
 /// Returns a penalty (low score multiplier) for tech stack mismatches
+///
+/// Optimized for sub-millisecond performance with early exits and reduced allocations
 pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
+    // Fast path: skip empty inputs
+    if query.is_empty() || pattern_text.is_empty() {
+        return 0.0;
+    }
+
+    // Tokenize both texts (optimized with pre-allocation)
     let query_tokens = tokenize(query);
     let pattern_tokens = tokenize(pattern_text);
 
@@ -34,7 +44,7 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
         1.0 // Neutral for unknown contexts - allows generic patterns to match
     };
 
-    // Build term frequency maps
+    // Build term frequency maps (with pre-allocated capacity)
     let query_tf = build_tf(&query_tokens);
     let pattern_tf = build_tf(&pattern_tokens);
 
@@ -44,11 +54,12 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
 
     for (term, &count) in &query_tf {
         let weight = term_weight(term);
-        query_norm += (count as f64 * weight).powi(2);
+        let weighted_count = count as f64 * weight;
+        query_norm += weighted_count * weighted_count;
 
         if let Some(&pattern_count) = pattern_tf.get(term) {
             // Boost for exact matches
-            score += count as f64 * pattern_count as f64 * weight * weight;
+            score += weighted_count * pattern_count as f64 * weight;
         }
     }
 
@@ -121,13 +132,21 @@ fn detect_tech_stack(tokens: &[String]) -> TechStack {
 }
 
 /// Tokenize text into meaningful terms with basic stemming
+/// Optimized to reduce allocations by reusing a single lowercase buffer
 fn tokenize(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-        .filter(|s| s.len() >= 2)
-        .filter(|s| !is_stopword(s))
-        .map(stem_word)
-        .collect()
+    // Pre-allocate with estimated capacity to reduce reallocations
+    let mut tokens = Vec::with_capacity(text.len() / 6);
+
+    // Work with lowercase version once
+    let lower = text.to_lowercase();
+
+    for token in lower.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+        if token.len() >= 2 && !is_stopword(token) {
+            tokens.push(stem_word(token));
+        }
+    }
+
+    tokens
 }
 
 /// Basic stemming - remove common suffixes
@@ -172,8 +191,9 @@ fn stem_word(word: &str) -> String {
 }
 
 /// Build term frequency map
+/// Pre-allocates HashMap capacity for better performance
 fn build_tf(tokens: &[String]) -> HashMap<&str, usize> {
-    let mut tf = HashMap::new();
+    let mut tf = HashMap::with_capacity(tokens.len());
     for token in tokens {
         *tf.entry(token.as_str()).or_insert(0) += 1;
     }
