@@ -4,7 +4,9 @@
 //! and judge pattern effectiveness.
 
 use crate::learning::trajectory::Trajectory;
+use crate::storage::{PatternStore, Pattern, calculate_similarity};
 use super::verdict::{Verdict, ReflectionVerdict, compute_trajectory_hash};
+use std::path::Path;
 use tracing::debug;
 
 /// Trajectory outcome analysis result
@@ -214,6 +216,8 @@ pub struct TrajectoryAnalyzer {
     max_boost: i32,
     /// Maximum penalty for harmful patterns
     max_penalty: i32,
+    /// Database path for pattern lookups
+    db_path: Option<std::path::PathBuf>,
 }
 
 impl TrajectoryAnalyzer {
@@ -222,12 +226,19 @@ impl TrajectoryAnalyzer {
         Self {
             max_boost: 5,
             max_penalty: -5,
+            db_path: None,
         }
     }
 
     /// Create with custom boost/penalty limits
     pub fn with_limits(max_boost: i32, max_penalty: i32) -> Self {
-        Self { max_boost, max_penalty }
+        Self { max_boost, max_penalty, db_path: None }
+    }
+
+    /// Set the database path for pattern lookups
+    pub fn with_db_path(mut self, path: &Path) -> Self {
+        self.db_path = Some(path.to_path_buf());
+        self
     }
 
     /// Analyze a trajectory to determine its outcome
@@ -405,6 +416,97 @@ impl TrajectoryAnalyzer {
             .any(|phrase| content.contains(phrase))
     }
 
+    /// Find the most relevant pattern for a trajectory
+    ///
+    /// This links trajectories to patterns that would have been injected
+    /// by looking at the tool calls and matching against stored patterns.
+    pub fn find_matching_pattern(&self, trajectory: &Trajectory) -> Option<i64> {
+        let db_path = self.db_path.as_ref()?;
+        if !db_path.exists() {
+            return None;
+        }
+
+        let store = PatternStore::open_readonly(db_path).ok()?;
+
+        // Find the primary tool used in this trajectory
+        let primary_tool = trajectory.tool_calls.first()?;
+        let tool_type = &primary_tool.tool_name;
+
+        // Build a query from the tool input (similar to inject)
+        let query = self.build_query_from_tool_call(&primary_tool);
+
+        // Get patterns for this tool type
+        let patterns = store.get_by_tool(tool_type, 10).ok()?;
+
+        if patterns.is_empty() {
+            return None;
+        }
+
+        // Find the best matching pattern by similarity
+        let mut best_match: Option<(i64, f64)> = None;
+
+        for pattern in patterns {
+            let similarity = calculate_similarity(&query, &pattern.context_query);
+
+            // Only consider patterns with reasonable similarity (>30%)
+            if similarity > 0.30 {
+                if best_match.is_none() || similarity > best_match.as_ref().unwrap().1 {
+                    best_match = Some((pattern.id, similarity));
+                }
+            }
+        }
+
+        debug!(
+            "Pattern match for trajectory: {:?} (query: {})",
+            best_match.as_ref().map(|(id, sim)| format!("id={}, sim={:.2}", id, sim)),
+            query.chars().take(50).collect::<String>()
+        );
+
+        best_match.map(|(id, _)| id)
+    }
+
+    /// Build a query string from a tool call (mirrors inject logic)
+    fn build_query_from_tool_call(&self, tool_call: &crate::learning::trajectory::ToolCall) -> String {
+        let input = &tool_call.tool_input;
+
+        match tool_call.tool_name.as_str() {
+            "Edit" | "Write" | "MultiEdit" => {
+                let file_path = input.get("file_path")
+                    .or_else(|| input.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let ext = file_path.rsplit('.').next().unwrap_or("unknown");
+                let filename = file_path.rsplit('/').next().unwrap_or(file_path);
+                format!("Editing {} file {}", ext, filename)
+            }
+            "Bash" => {
+                let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let first_word = cmd.split_whitespace().next().unwrap_or("");
+                let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                if !desc.is_empty() {
+                    format!("Bash {} {}", first_word, desc)
+                } else {
+                    format!("Bash {}", first_word)
+                }
+            }
+            "Task" => {
+                let agent = input.get("subagent_type").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let desc = input.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                format!("Agent: {} - {}", agent, desc)
+            }
+            "Read" | "Glob" | "Grep" => {
+                let path = input.get("file_path")
+                    .or_else(|| input.get("path"))
+                    .or_else(|| input.get("pattern"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let filename = path.rsplit('/').next().unwrap_or(path);
+                format!("Reading {}", filename)
+            }
+            _ => format!("Tool: {}", tool_call.tool_name),
+        }
+    }
+
     /// Judge a trajectory and produce a verdict
     pub fn judge(&self, outcome: &TrajectoryOutcome, trajectory: &Trajectory) -> Option<ReflectionVerdict> {
         let trajectory_hash = compute_trajectory_hash(
@@ -412,6 +514,9 @@ impl TrajectoryAnalyzer {
             &trajectory.user_query,
             &trajectory.tool_calls,
         );
+
+        // Find matching pattern for this trajectory
+        let pattern_id = self.find_matching_pattern(trajectory);
 
         // Determine verdict based on outcome
         // Be conservative with HARMFUL - only mark HARMFUL for clear failures with explicit errors
@@ -447,13 +552,14 @@ impl TrajectoryAnalyzer {
         };
 
         debug!(
-            "Verdict for trajectory {}: {:?} (confidence: {:.2})",
+            "Verdict for trajectory {}: {:?} (confidence: {:.2}, pattern: {:?})",
             trajectory_hash,
             verdict.category,
-            verdict.confidence
+            verdict.confidence,
+            pattern_id
         );
 
-        Some(ReflectionVerdict::new(trajectory_hash, None, verdict))
+        Some(ReflectionVerdict::new(trajectory_hash, pattern_id, verdict))
     }
 
     /// Analyze root cause from error types

@@ -88,6 +88,7 @@ pub struct ReflectionEngine {
     config: ReflectionConfig,
     analyzer: TrajectoryAnalyzer,
     distiller: MemoryDistiller,
+    db_path: Option<std::path::PathBuf>,
 }
 
 impl ReflectionEngine {
@@ -97,6 +98,17 @@ impl ReflectionEngine {
             config: config.clone(),
             analyzer: TrajectoryAnalyzer::new(),
             distiller: MemoryDistiller::new(config),
+            db_path: None,
+        }
+    }
+
+    /// Create a new reflection engine with database path for pattern linking
+    pub fn with_db_path(config: ReflectionConfig, db_path: &Path) -> Self {
+        Self {
+            config: config.clone(),
+            analyzer: TrajectoryAnalyzer::new().with_db_path(db_path),
+            distiller: MemoryDistiller::new(config),
+            db_path: Some(db_path.to_path_buf()),
         }
     }
 

@@ -548,9 +548,9 @@ async fn run_async_main(cli: Cli) -> Result<()> {
 
                     println!("Found {} trajectories to analyze", all_trajectories.len());
 
-                    // Run reflection
+                    // Run reflection with database path for pattern linking
                     let config = reflection::ReflectionConfig::default();
-                    let engine = reflection::ReflectionEngine::new(config);
+                    let engine = reflection::ReflectionEngine::with_db_path(config, &db_path);
 
                     let verdicts = engine.reflect(&all_trajectories)?;
                     let updated = engine.apply_verdicts(&conn, &verdicts)?;
