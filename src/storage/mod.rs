@@ -11,12 +11,14 @@ use tracing::info;
 pub mod patterns;
 pub mod similarity;
 pub mod causal;
+pub mod skills;
 
 pub use patterns::{PatternStore, Pattern};
 pub use similarity::calculate_similarity;
 pub use causal::CausalStore;
 #[allow(unused_imports)]
 pub use causal::CausalEdge;
+pub use skills::{SkillStore, Skill, consolidate_patterns_to_skills};
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {
@@ -308,6 +310,47 @@ pub async fn show_stats() -> Result<()> {
             |row| row.get(0)
         ).unwrap_or(0.0);
         println!("  Avg co-occurrences: {:.1}", avg_cooccur);
+    }
+
+    // Skill Statistics
+    println!();
+    println!("Skills:");
+    println!("-------");
+
+    // Check if skills table exists and has data
+    let skill_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM skills",
+        [],
+        |row| row.get(0)
+    ).unwrap_or(0);
+
+    if skill_count > 0 {
+        println!("  Total skills: {}", skill_count);
+
+        // Skills by tool type
+        let mut stmt = conn.prepare(
+            "SELECT tool_type, COUNT(*), SUM(pattern_count) FROM skills GROUP BY tool_type ORDER BY COUNT(*) DESC"
+        )?;
+        let skill_stats = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+        })?;
+
+        println!("  By tool type:");
+        for result in skill_stats {
+            if let Ok((tool, count, patterns)) = result {
+                println!("    {}: {} skills ({} patterns)", tool, count, patterns);
+            }
+        }
+
+        // Average success rate
+        let avg_success_rate: f64 = conn.query_row(
+            "SELECT AVG(CAST(total_success AS REAL) / NULLIF(total_success + total_failure, 0) * 100) FROM skills",
+            [],
+            |row| row.get(0)
+        ).unwrap_or(0.0);
+        println!("  Avg skill success rate: {:.1}%", avg_success_rate);
+    } else {
+        println!("  No skills created yet. Run 'mana consolidate' to create skills.");
     }
 
     Ok(())

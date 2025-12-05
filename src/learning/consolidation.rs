@@ -31,11 +31,21 @@ pub async fn consolidate() -> Result<()> {
     let decayed = decay_unused_patterns(&db_path)?;
     let pruned = prune_low_quality_patterns(&db_path)?;
 
+    // Consolidate patterns into skills
+    let skills = consolidate_to_skills(&db_path)?;
+
     info!(
-        "Consolidation complete: merged {} patterns, decayed {}, pruned {}",
-        merged, decayed, pruned
+        "Consolidation complete: merged {} patterns, decayed {}, pruned {}, created {} skills",
+        merged, decayed, pruned, skills
     );
     Ok(())
+}
+
+/// Consolidate patterns into skills
+fn consolidate_to_skills(db_path: &PathBuf) -> Result<usize> {
+    use crate::storage::consolidate_patterns_to_skills;
+
+    consolidate_patterns_to_skills(db_path)
 }
 
 /// Merge patterns with very high similarity (>90%)
