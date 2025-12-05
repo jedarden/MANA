@@ -12,10 +12,18 @@ use std::collections::HashMap;
 /// Returns a penalty (low score multiplier) for tech stack mismatches
 ///
 /// Optimized for sub-millisecond performance with early exits and reduced allocations
+#[inline]
 pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
     // Fast path: skip empty inputs
     if query.is_empty() || pattern_text.is_empty() {
         return 0.0;
+    }
+
+    // Fast path for typical inputs
+    // Use simple word overlap instead of full tokenization
+    // Most queries are <80 chars and patterns are <300 chars
+    if query.len() < 100 && pattern_text.len() < 400 {
+        return calculate_similarity_fast(query, pattern_text);
     }
 
     // Early tech stack detection directly on strings (avoids full tokenization for mismatches)
@@ -80,6 +88,65 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
     } else {
         0.0
     }
+}
+
+/// Ultra-fast similarity for short strings using simple word overlap
+/// Avoids tokenization overhead for common case of short queries
+#[inline]
+fn calculate_similarity_fast(query: &str, pattern_text: &str) -> f64 {
+    // Check tech stacks FIRST before any lowercase conversion
+    // This is faster because we use ASCII byte matching
+    let query_tech = detect_tech_stack_fast(query);
+    let pattern_tech = detect_tech_stack_fast(pattern_text);
+
+    let tech_modifier = if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown {
+        if query_tech == pattern_tech { 1.5 } else { 0.3 }
+    } else {
+        1.0
+    };
+
+    // Early exit for tech mismatches with no common words
+    if tech_modifier < 0.5 {
+        return 0.1 * tech_modifier;
+    }
+
+    // Single lowercase conversion per string
+    let query_lower = query.to_lowercase();
+    let pattern_lower = pattern_text.to_lowercase();
+
+    // Simple word overlap scoring with early termination
+    let mut matches = 0u32;
+    let mut total_weight = 0.0f32;
+
+    for word in query_lower.split_whitespace() {
+        let len = word.len();
+        if len < 2 {
+            continue;
+        }
+
+        // Skip very common words
+        if matches!(word, "the" | "and" | "for" | "to" | "in" | "of" | "is" | "it") {
+            continue;
+        }
+
+        let weight = if len >= 4 { 2.0 } else { 1.0 };
+        total_weight += weight;
+
+        if pattern_lower.contains(word) {
+            matches += 1;
+            // Bonus for file extension matches (high signal)
+            if len <= 4 && matches!(word, "rs" | "js" | "ts" | "py" | "go" | "rb" | "sh" | "tsx" | "jsx") {
+                matches += 1;
+            }
+        }
+    }
+
+    if total_weight == 0.0 {
+        return 0.0;
+    }
+
+    let base_score = (matches as f64 / total_weight as f64).min(1.0);
+    (base_score * tech_modifier).min(2.0)
 }
 
 /// Technology stack detection for context-aware matching

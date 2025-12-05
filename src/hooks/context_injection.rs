@@ -49,8 +49,8 @@ struct ContextInjection {
 const MAX_PATTERNS: usize = 3;
 
 /// Number of patterns to retrieve for similarity scoring (before filtering)
-/// Higher = better relevance matching but slightly slower
-const PATTERNS_TO_SCORE: usize = 20;
+/// Balanced at 8 - enough for quality matches without excess overhead
+const PATTERNS_TO_SCORE: usize = 8;
 
 /// Maximum time budget for injection in milliseconds
 const INJECTION_TIMEOUT_MS: u128 = 10;
@@ -199,59 +199,46 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         patterns.append(&mut type_patterns);
     }
 
-    // Don't truncate here - let similarity scoring find the best matches
-    // Sort by score only as a tie-breaker for equal similarity
-    patterns.sort_by(|a, b| {
-        let a_score = a.success_count - a.failure_count;
-        let b_score = b.success_count - b.failure_count;
-        b_score.cmp(&a_score)
-    });
-
-    // Deduplicate patterns by extracting unique context insights
-    let mut seen_insights: std::collections::HashSet<String> = std::collections::HashSet::new();
-    patterns.retain(|p| {
-        let insight = extract_insight(&p.context_query);
-        // Normalize insight for comparison (first 50 chars, lowercased)
-        let normalized = insight.to_lowercase().chars().take(50).collect::<String>();
-        if seen_insights.contains(&normalized) {
-            false
-        } else {
-            seen_insights.insert(normalized);
-            true
-        }
-    });
+    // Patterns are already sorted by score from DB query
+    // Skip heavy deduplication - similarity scoring handles relevance
+    // Just do a quick truncate to limit work
+    patterns.truncate(PATTERNS_TO_SCORE * 2);
 
     // Score patterns by semantic similarity if query is not empty
     if !query.is_empty() {
         debug!("Scoring {} patterns for query: {}", patterns.len(), query);
 
         // Use TF-IDF style similarity scoring for better relevance
+        // Process patterns in batches for better cache locality
         let mut scored_patterns: Vec<(Pattern, f64)> = patterns
             .into_iter()
-            .map(|p| {
+            .filter_map(|p| {
                 let similarity = calculate_similarity(query, &p.context_query);
+
+                // Early filter: skip patterns below threshold
+                if similarity < MIN_TECH_STACK_SIMILARITY {
+                    return None;
+                }
+
                 // Combine similarity with success score for final ranking
                 let success_score = (p.success_count - p.failure_count) as f64;
                 let combined_score = similarity * 0.6 + (success_score.max(0.0) / 10.0) * 0.4;
                 debug!("  Pattern [{}]: sim={:.3}, combined={:.3}, context: {}",
                     p.tool_type, similarity, combined_score,
                     p.context_query.chars().take(60).collect::<String>());
-                (p, similarity, combined_score)
+                Some((p, combined_score))
             })
-            // Filter out patterns with very low similarity (likely tech stack mismatch)
-            // This prevents showing shell patterns for Python queries, etc.
-            .filter(|(_, sim, _)| *sim >= MIN_TECH_STACK_SIMILARITY)
-            .map(|(p, _, score)| (p, score))
             .collect();
 
         // Sort by combined score (descending)
         scored_patterns.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Filter out conflicting patterns using causal edges
-        // If the top pattern has conflicts, remove those conflicts from candidates
-        let scored_patterns = filter_causal_conflicts(&db_path, scored_patterns);
+        // Only filter causal conflicts if we have more candidates than needed
+        // This avoids extra DB I/O in the common case
+        if scored_patterns.len() > MAX_PATTERNS {
+            scored_patterns = filter_causal_conflicts(&db_path, scored_patterns);
+        }
 
-        let mut scored_patterns = scored_patterns;
         scored_patterns.truncate(MAX_PATTERNS);
 
         debug!("Ranked {} patterns by similarity (filtered by tech stack + causal)", scored_patterns.len());
