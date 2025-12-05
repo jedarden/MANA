@@ -39,11 +39,20 @@ impl PatternStore {
 
     /// Open pattern store with read optimizations (for inject command)
     /// Skips write-related pragmas for faster startup
+    /// Uses mmap for faster file access and prepared statement caching
     pub fn open_readonly(db_path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(
             db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI,
         )?;
+
+        // Use memory-mapped I/O for faster reads (8MB mmap region)
+        conn.pragma_update(None, "mmap_size", 8_388_608)?;
+        // Keep prepared statements cached
+        conn.set_prepared_statement_cache_capacity(16);
+
         Ok(Self { conn })
     }
 
@@ -201,7 +210,8 @@ impl PatternStore {
 
     /// Get patterns by tool type
     pub fn get_by_tool(&self, tool_type: &str, limit: usize) -> Result<Vec<Pattern>> {
-        let mut stmt = self.conn.prepare(
+        // Use prepare_cached for faster repeated queries
+        let mut stmt = self.conn.prepare_cached(
             r#"
             SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
             FROM patterns
@@ -369,7 +379,7 @@ impl PatternStore {
 
     /// Get top patterns across all tool types (for fallback)
     pub fn get_top_patterns(&self, limit: usize) -> Result<Vec<Pattern>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             r#"
             SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
             FROM patterns
