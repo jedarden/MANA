@@ -4,6 +4,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod bench;
+mod embeddings;
 mod hooks;
 mod learning;
 mod storage;
@@ -79,6 +80,12 @@ enum Commands {
 
     /// Run performance benchmarks
     Bench,
+
+    /// Manage vector embeddings for semantic search
+    Embed {
+        #[command(subcommand)]
+        action: EmbedAction,
+    },
 
     /// Export patterns to a file (for sync/sharing)
     Export {
@@ -215,6 +222,27 @@ enum PeerAction {
 }
 
 #[derive(Subcommand)]
+enum EmbedAction {
+    /// Show embedding system status
+    Status,
+
+    /// Rebuild all embeddings (useful after model update)
+    Rebuild,
+
+    /// Test semantic search with a query
+    Search {
+        /// Search query text
+        query: String,
+        /// Number of results
+        #[arg(short, long, default_value = "5")]
+        limit: usize,
+    },
+
+    /// Generate embeddings for patterns that don't have them
+    Generate,
+}
+
+#[derive(Subcommand)]
 enum TeamAction {
     /// Create a new team
     Create {
@@ -325,6 +353,79 @@ async fn run_async_main(cli: Cli) -> Result<()> {
         }
         Commands::Bench => {
             bench::run_benchmarks().await?;
+        }
+        Commands::Embed { action } => {
+            let mana_dir = get_mana_dir()?;
+
+            match action {
+                EmbedAction::Status => {
+                    if embeddings::is_available(&mana_dir) {
+                        let status = embeddings::status(&mana_dir)?;
+                        println!("Embedding Status");
+                        println!("================");
+                        println!();
+                        println!("Model: {} ({})", status.model_name, status.model_version);
+                        println!("Dimensions: {}", status.dimensions);
+                        println!("Indexed vectors: {}", status.vector_count);
+                        if status.unembedded_count > 0 {
+                            println!("Patterns without embeddings: {}", status.unembedded_count);
+                            println!();
+                            println!("   Run 'mana embed generate' to create missing embeddings");
+                        }
+                        println!("Index size: {} bytes", status.index_size_bytes);
+                    } else {
+                        println!("Embeddings not initialized.");
+                        println!();
+                        println!("Run 'mana embed generate' to create embeddings for all patterns.");
+                    }
+                }
+                EmbedAction::Rebuild => {
+                    println!("Rebuilding all embeddings...");
+                    let config = embeddings::EmbeddingConfig::default();
+                    let mut store = embeddings::init(&mana_dir, &config)?;
+                    let count = store.rebuild()?;
+                    println!("Rebuilt embeddings for {} patterns", count);
+                }
+                EmbedAction::Generate => {
+                    println!("Generating embeddings for patterns without them...");
+                    let config = embeddings::EmbeddingConfig::default();
+                    let mut store = embeddings::init(&mana_dir, &config)?;
+                    let count = store.embed_missing()?;
+                    if count > 0 {
+                        println!("Generated embeddings for {} patterns", count);
+                    } else {
+                        println!("All patterns already have embeddings.");
+                    }
+                }
+                EmbedAction::Search { query, limit } => {
+                    // Use open to load existing embeddings
+                    let store = embeddings::EmbeddingStore::open(&mana_dir)?;
+
+                    // Make sure we have embeddings
+                    let status = store.status()?;
+                    if status.vector_count == 0 {
+                        println!("No embeddings found. Run 'mana embed generate' first.");
+                        return Ok(());
+                    }
+
+                    println!("Searching for: \"{}\"", query);
+                    println!();
+
+                    let results = store.search_with_context(&query, limit)?;
+
+                    if results.is_empty() {
+                        println!("No matching patterns found.");
+                    } else {
+                        for (i, m) in results.iter().enumerate() {
+                            let success_rate = m.success_rate() * 100.0;
+                            println!("{}. [{}] (sim: {:.3}, success: {:.0}%)",
+                                i + 1, m.tool_type, m.similarity, success_rate);
+                            println!("   {}", m.context_query);
+                            println!();
+                        }
+                    }
+                }
+            }
         }
         Commands::Export { output, encrypted, passphrase, no_sanitize } => {
             let mana_dir = get_mana_dir()?;
