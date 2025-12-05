@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use rusqlite::{Connection, params};
 use tracing::{debug, info, warn};
@@ -48,7 +48,7 @@ pub async fn consolidate() -> Result<()> {
 }
 
 /// Clean up invalid causal edges (self-referential, orphaned)
-fn cleanup_causal_edges(db_path: &PathBuf) -> Result<usize> {
+fn cleanup_causal_edges(db_path: &Path) -> Result<usize> {
     use crate::storage::CausalStore;
 
     let store = CausalStore::open(db_path)?;
@@ -58,14 +58,14 @@ fn cleanup_causal_edges(db_path: &PathBuf) -> Result<usize> {
 }
 
 /// Consolidate patterns into skills
-fn consolidate_to_skills(db_path: &PathBuf) -> Result<usize> {
+fn consolidate_to_skills(db_path: &Path) -> Result<usize> {
     use crate::storage::consolidate_patterns_to_skills;
 
     consolidate_patterns_to_skills(db_path)
 }
 
 /// Merge patterns with very high similarity (>90%)
-fn merge_similar_patterns(db_path: &PathBuf) -> Result<usize> {
+fn merge_similar_patterns(db_path: &Path) -> Result<usize> {
     let conn = Connection::open(db_path)?;
 
     // Get all patterns grouped by tool type
@@ -142,7 +142,7 @@ fn merge_similar_patterns(db_path: &PathBuf) -> Result<usize> {
 }
 
 /// Decay patterns that haven't been used recently
-fn decay_unused_patterns(db_path: &PathBuf) -> Result<usize> {
+fn decay_unused_patterns(db_path: &Path) -> Result<usize> {
     let conn = Connection::open(db_path)?;
 
     // Decay patterns not used in 7+ days
@@ -160,7 +160,7 @@ fn decay_unused_patterns(db_path: &PathBuf) -> Result<usize> {
 }
 
 /// Prune patterns with very low scores
-fn prune_low_quality_patterns(db_path: &PathBuf) -> Result<usize> {
+fn prune_low_quality_patterns(db_path: &Path) -> Result<usize> {
     let conn = Connection::open(db_path)?;
 
     // Delete patterns with very negative scores (failures > successes + 3)

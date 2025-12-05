@@ -340,10 +340,8 @@ pub async fn show_stats() -> Result<()> {
         })?;
 
         println!("  By tool type:");
-        for result in skill_stats {
-            if let Ok((tool, count, patterns)) = result {
-                println!("    {}: {} skills ({} patterns)", tool, count, patterns);
-            }
+        for (tool, count, patterns) in skill_stats.flatten() {
+            println!("    {}: {} skills ({} patterns)", tool, count, patterns);
         }
 
         // Average success rate

@@ -18,8 +18,12 @@
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use tracing::{debug, info};
+
+/// Type alias for pattern groups: (tool_type, command_category) -> Vec<(id, context, success, failure)>
+type PatternGroups = HashMap<(String, Option<String>), Vec<(i64, String, i64, i64)>>;
 
 #[allow(unused_imports)]
 use super::Pattern;
@@ -266,8 +270,7 @@ pub fn consolidate_patterns_to_skills(db_path: &Path) -> Result<usize> {
     }
 
     // Group patterns by tool_type and command_category
-    let mut groups: std::collections::HashMap<(String, Option<String>), Vec<(i64, String, i64, i64)>> =
-        std::collections::HashMap::new();
+    let mut groups: PatternGroups = HashMap::new();
 
     for (id, tool_type, category, context, success, failure) in patterns {
         groups
