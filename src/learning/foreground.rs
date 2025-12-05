@@ -6,6 +6,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -14,6 +15,7 @@ use tracing::{debug, info};
 use super::trajectory::{parse_trajectories, Trajectory};
 use super::LearningResult;
 use crate::storage::{PatternStore, Pattern, CausalStore};
+use crate::hooks::session_end_handler::AccumulatorState;
 
 /// Maximum patterns to extract per trajectory (ReasoningBank constraint)
 const MAX_PATTERNS_PER_TRAJECTORY: usize = 3;
@@ -26,6 +28,9 @@ const MAX_PATTERNS_PER_TRAJECTORY: usize = 3;
 /// OPTIMIZATION: Uses batch deduplication to reduce DB queries from O(n) to O(1)
 /// where n is the number of patterns extracted. Previously each pattern required
 /// a DB query + similarity calculations; now we deduplicate in-memory first.
+///
+/// IMPORTANT: Uses last_file_positions to only process NEW trajectories,
+/// preventing score inflation from repeatedly processing the same data.
 pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResult> {
     let start = Instant::now();
 
@@ -38,6 +43,10 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
     let db_path = mana_dir.join("metadata.sqlite");
     let mut store = PatternStore::open(&db_path)?;
 
+    // Load learning state to get file positions
+    let state_path = mana_dir.join("learning-state.json");
+    let state = AccumulatorState::load(&state_path)?;
+
     // Parse trajectories from all JSONL files in Claude logs
     let claude_logs = get_claude_logs_dir();
     if !claude_logs.exists() {
@@ -49,12 +58,37 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
     let jsonl_files = collect_jsonl_files(&claude_logs)?;
     info!("Found {} JSONL files to process", jsonl_files.len());
 
-    // Parse trajectories
+    // Track which files we actually processed (for updating positions)
+    let mut new_positions: HashMap<PathBuf, u64> = HashMap::new();
+
+    // Parse trajectories - USING STORED POSITIONS to only get new data
     let mut all_trajectories = Vec::new();
     for file in &jsonl_files {
-        match parse_trajectories(file, 0) {
+        // Get the last processed position for this file (0 if never processed)
+        let start_offset = state.last_file_positions
+            .get(file)
+            .copied()
+            .unwrap_or(0);
+
+        // Get current file size to track new position
+        let file_len = std::fs::metadata(file)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        // Skip if we've already processed to the end
+        if start_offset >= file_len {
+            continue;
+        }
+
+        match parse_trajectories(file, start_offset) {
             Ok(trajectories) => {
-                all_trajectories.extend(trajectories);
+                if !trajectories.is_empty() {
+                    debug!("Parsed {} new trajectories from {:?} (offset {} -> {})",
+                           trajectories.len(), file, start_offset, file_len);
+                    all_trajectories.extend(trajectories);
+                }
+                // Record new position
+                new_positions.insert(file.clone(), file_len);
             }
             Err(e) => {
                 debug!("Failed to parse {:?}: {}", file, e);
@@ -111,6 +145,18 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
 
     // Log learning event to database
     log_learning_event(&db_path, &result)?;
+
+    // Update file positions in the learning state
+    // This ensures we don't reprocess the same trajectories
+    if !new_positions.is_empty() {
+        let mut updated_state = state;
+        updated_state.last_file_positions.extend(new_positions);
+        if let Err(e) = updated_state.save(&state_path) {
+            debug!("Failed to save updated file positions: {}", e);
+        } else {
+            debug!("Updated file positions for {} files", updated_state.last_file_positions.len());
+        }
+    }
 
     result.duration_ms = start.elapsed().as_millis() as u64;
 

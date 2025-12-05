@@ -4,7 +4,7 @@
 //! Session-end hooks trigger learning when threshold is met.
 
 mod context_injection;
-mod session_end_handler;
+pub mod session_end_handler;
 
 pub use context_injection::inject_context;
-pub use session_end_handler::session_end;
+pub use session_end_handler::{session_end, AccumulatorState};
