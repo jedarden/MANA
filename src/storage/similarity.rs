@@ -94,10 +94,13 @@ pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
 /// Avoids tokenization overhead for common case of short queries
 #[inline]
 fn calculate_similarity_fast(query: &str, pattern_text: &str) -> f64 {
-    // Check tech stacks FIRST before any lowercase conversion
-    // This is faster because we use ASCII byte matching
-    let query_tech = detect_tech_stack_fast(query);
-    let pattern_tech = detect_tech_stack_fast(pattern_text);
+    // Single lowercase conversion per string - reused for both tech detection and matching
+    let query_lower = query.to_lowercase();
+    let pattern_lower = pattern_text.to_lowercase();
+
+    // Check tech stacks using pre-lowercased strings (avoids duplicate lowercase)
+    let query_tech = detect_tech_stack_lowered(&query_lower);
+    let pattern_tech = detect_tech_stack_lowered(&pattern_lower);
 
     let tech_modifier = if query_tech != TechStack::Unknown && pattern_tech != TechStack::Unknown {
         if query_tech == pattern_tech { 1.5 } else { 0.3 }
@@ -109,10 +112,6 @@ fn calculate_similarity_fast(query: &str, pattern_text: &str) -> f64 {
     if tech_modifier < 0.5 {
         return 0.1 * tech_modifier;
     }
-
-    // Single lowercase conversion per string
-    let query_lower = query.to_lowercase();
-    let pattern_lower = pattern_text.to_lowercase();
 
     // Simple word overlap scoring with early termination
     let mut matches = 0u32;
@@ -166,6 +165,13 @@ enum TechStack {
 fn detect_tech_stack_fast(text: &str) -> TechStack {
     // Convert to lowercase bytes for fast comparison
     let lower = text.to_lowercase();
+    detect_tech_stack_lowered(&lower)
+}
+
+/// Tech stack detection on already-lowercased string (avoids redundant lowercase)
+/// This is the hot path - used by calculate_similarity_fast
+#[inline]
+fn detect_tech_stack_lowered(lower: &str) -> TechStack {
     let bytes = lower.as_bytes();
 
     let mut rust_signals = 0i8;
