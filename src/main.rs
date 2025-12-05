@@ -7,6 +7,7 @@ mod bench;
 mod hooks;
 mod learning;
 mod storage;
+mod sync;
 mod update;
 
 /// MANA - Memory-Augmented Neural Assistant
@@ -78,6 +79,34 @@ enum Commands {
 
     /// Run performance benchmarks
     Bench,
+
+    /// Export patterns to a file (for sync/sharing)
+    Export {
+        /// Output file path
+        #[arg(long, default_value = "mana-patterns.json")]
+        output: String,
+        /// Encrypt the export with a passphrase
+        #[arg(long)]
+        encrypted: bool,
+        /// Passphrase for encryption (reads from MANA_SYNC_KEY env var if not provided)
+        #[arg(long)]
+        passphrase: Option<String>,
+        /// Skip path sanitization (not recommended for sharing)
+        #[arg(long)]
+        no_sanitize: bool,
+    },
+
+    /// Import patterns from a file
+    Import {
+        /// Input file path
+        input: String,
+        /// Passphrase for decryption (reads from MANA_SYNC_KEY env var if not provided)
+        #[arg(long)]
+        passphrase: Option<String>,
+        /// Merge strategy: add (default), replace, keep-best
+        #[arg(long, default_value = "add")]
+        merge: String,
+    },
 }
 
 #[tokio::main]
@@ -139,7 +168,73 @@ async fn main() -> Result<()> {
         Commands::Bench => {
             bench::run_benchmarks().await?;
         }
+        Commands::Export { output, encrypted, passphrase, no_sanitize } => {
+            let mana_dir = get_mana_dir()?;
+            let db_path = mana_dir.join("metadata.sqlite");
+
+            // Get passphrase from arg or env
+            let passphrase = passphrase.or_else(|| std::env::var("MANA_SYNC_KEY").ok());
+
+            let security = sync::SecurityConfig {
+                sanitize_paths: !no_sanitize,
+                redact_secrets: !no_sanitize,
+                encrypt: encrypted,
+                visibility: sync::Visibility::Private,
+            };
+
+            let pass_ref = if encrypted {
+                passphrase.as_deref()
+            } else {
+                None
+            };
+
+            let count = sync::export_patterns(&db_path, std::path::Path::new(&output), &security, pass_ref)?;
+            println!("✅ Exported {} patterns to {}", count, output);
+            if encrypted {
+                println!("📦 Export is encrypted with AES-256-GCM");
+            }
+            if !no_sanitize {
+                println!("🔒 Paths sanitized, secrets redacted");
+            }
+        }
+        Commands::Import { input, passphrase, merge } => {
+            let mana_dir = get_mana_dir()?;
+            let db_path = mana_dir.join("metadata.sqlite");
+
+            // Get passphrase from arg or env
+            let passphrase = passphrase.or_else(|| std::env::var("MANA_SYNC_KEY").ok());
+
+            let merge_strategy = match merge.as_str() {
+                "replace" => sync::export::MergeStrategy::Replace,
+                "keep-best" => sync::export::MergeStrategy::KeepBest,
+                _ => sync::export::MergeStrategy::Add,
+            };
+
+            let result = sync::import_patterns(&db_path, std::path::Path::new(&input), passphrase.as_deref(), merge_strategy)?;
+
+            println!("✅ Import complete from {}", result.source_workspace);
+            println!("   Total patterns: {}", result.total);
+            println!("   New patterns: {}", result.imported);
+            println!("   Merged: {}", result.merged);
+            if result.skipped > 0 {
+                println!("   Skipped: {}", result.skipped);
+            }
+        }
     }
 
     Ok(())
+}
+
+fn get_mana_dir() -> Result<std::path::PathBuf> {
+    // Check for .mana directory in current project first
+    let cwd = std::env::current_dir()?;
+    let project_mana = cwd.join(".mana");
+    if project_mana.exists() {
+        return Ok(project_mana);
+    }
+
+    // Fall back to home directory
+    let home = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    Ok(home.join(".mana"))
 }
