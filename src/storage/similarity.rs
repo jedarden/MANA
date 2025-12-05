@@ -163,6 +163,7 @@ enum TechStack {
 
 /// Fast tech stack detection directly on the raw string (avoids tokenization)
 /// Uses substring matching for speed - O(n) where n is string length
+#[allow(dead_code)]
 #[inline]
 fn detect_tech_stack_fast(text: &str) -> TechStack {
     // Convert to lowercase bytes for fast comparison
@@ -240,7 +241,8 @@ fn detect_tech_stack_lowered(lower: &str) -> TechStack {
     else { TechStack::Unknown }
 }
 
-/// Detect the technology stack from tokenized text (legacy, used by tests)
+/// Detect the technology stack from tokenized text (used by tests)
+#[cfg(test)]
 fn detect_tech_stack(tokens: &[String]) -> TechStack {
     let mut rust_signals = 0;
     let mut js_signals = 0;
@@ -291,6 +293,7 @@ fn detect_tech_stack(tokens: &[String]) -> TechStack {
 
 /// Tokenize text into meaningful terms with basic stemming
 /// Optimized to reduce allocations by reusing a single lowercase buffer
+#[cfg(test)]
 fn tokenize(text: &str) -> Vec<String> {
     // Pre-allocate with estimated capacity to reduce reallocations
     let mut tokens = Vec::with_capacity(text.len() / 6);
@@ -309,6 +312,7 @@ fn tokenize(text: &str) -> Vec<String> {
 
 /// Fast tokenization that avoids String allocation where possible
 /// Returns string slices into a pre-lowercased buffer
+#[allow(dead_code)]
 #[inline]
 fn tokenize_fast(text: &str) -> Vec<String> {
     // Pre-allocate with estimated capacity
@@ -394,6 +398,7 @@ fn stem_word_fast(word: &str) -> String {
 }
 
 /// Basic stemming - remove common suffixes
+#[allow(dead_code)]
 fn stem_word(word: &str) -> String {
     let word = word.to_string();
 
@@ -436,6 +441,7 @@ fn stem_word(word: &str) -> String {
 
 /// Build term frequency map
 /// Pre-allocates HashMap capacity for better performance
+#[allow(dead_code)]
 fn build_tf(tokens: &[String]) -> HashMap<&str, usize> {
     let mut tf = HashMap::with_capacity(tokens.len());
     for token in tokens {
@@ -456,6 +462,7 @@ fn build_tf_fast(tokens: &[String]) -> HashMap<&str, usize> {
 
 /// Get importance weight for a term
 /// Technical terms and file extensions get higher weights
+#[allow(dead_code)]
 fn term_weight(term: &str) -> f64 {
     // File extensions - very specific
     if is_file_extension(term) {
@@ -531,6 +538,7 @@ fn term_weight_fast(term: &str) -> f64 {
 }
 
 /// Check if term is a file extension
+#[allow(dead_code)]
 fn is_file_extension(term: &str) -> bool {
     matches!(term, "rs" | "js" | "ts" | "tsx" | "jsx" | "py" | "go" | "rb" |
              "java" | "cpp" | "c" | "h" | "md" | "json" | "yaml" | "yml" |
@@ -538,6 +546,7 @@ fn is_file_extension(term: &str) -> bool {
 }
 
 /// Check if term is a common stopword
+#[allow(dead_code)]
 fn is_stopword(term: &str) -> bool {
     matches!(term, "the" | "a" | "an" | "is" | "are" | "was" | "were" |
              "be" | "been" | "being" | "have" | "has" | "had" | "do" |

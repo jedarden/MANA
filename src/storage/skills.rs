@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::{debug, info};
 
+#[allow(unused_imports)]
 use super::Pattern;
 use crate::storage::calculate_similarity;
 
@@ -46,6 +47,7 @@ pub struct Skill {
 
 impl Skill {
     /// Calculate success rate as a percentage
+    #[allow(dead_code)]
     pub fn success_rate(&self) -> f64 {
         let total = self.total_success + self.total_failure;
         if total > 0 {
@@ -56,6 +58,7 @@ impl Skill {
     }
 
     /// Calculate a score for ranking skills
+    #[allow(dead_code)]
     pub fn score(&self) -> i64 {
         self.total_success - self.total_failure
     }
@@ -108,6 +111,7 @@ impl SkillStore {
     }
 
     /// Open skill store in read-only mode
+    #[allow(dead_code)]
     pub fn open_readonly(db_path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(
             db_path,
@@ -146,6 +150,7 @@ impl SkillStore {
     }
 
     /// Get skills by tool type
+    #[allow(dead_code)]
     pub fn get_by_tool(&self, tool_type: &str, limit: usize) -> Result<Vec<Skill>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -175,6 +180,7 @@ impl SkillStore {
     }
 
     /// Get all skills
+    #[allow(dead_code)]
     pub fn get_all(&self, limit: usize) -> Result<Vec<Skill>> {
         let mut stmt = self.conn.prepare(
             r#"
@@ -203,6 +209,7 @@ impl SkillStore {
     }
 
     /// Get skill count
+    #[allow(dead_code)]
     pub fn count(&self) -> Result<i64> {
         self.conn.query_row("SELECT COUNT(*) FROM skills", [], |row| row.get(0))
             .map_err(Into::into)

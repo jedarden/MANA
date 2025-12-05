@@ -18,6 +18,7 @@ pub use similarity::calculate_similarity;
 pub use causal::CausalStore;
 #[allow(unused_imports)]
 pub use causal::CausalEdge;
+#[allow(unused_imports)]
 pub use skills::{SkillStore, Skill, consolidate_patterns_to_skills};
 
 /// Initialize MANA storage and configuration
