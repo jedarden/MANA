@@ -33,8 +33,8 @@ const MAX_PATTERNS: usize = 3;
 /// Maximum time budget for injection in milliseconds
 const INJECTION_TIMEOUT_MS: u128 = 10;
 
-/// Minimum relevance score to include a pattern
-const MIN_RELEVANCE_SCORE: usize = 1;
+/// Minimum relevance score to include a pattern (0 = no filtering)
+const MIN_RELEVANCE_SCORE: usize = 0;
 
 /// Inject context from ReasoningBank based on tool input
 ///
@@ -124,10 +124,13 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     let store = PatternStore::open(&db_path)?;
 
     // Map tool argument to database tool_types (may need multiple)
+    // Prioritize exact matches, then broader matches
     let tool_types: Vec<&str> = match tool {
-        "edit" => vec!["Edit", "Write", "MultiEdit"],  // Edit hooks may have Write patterns
+        "edit" => vec!["Edit", "Write", "MultiEdit", "Read"],  // Include related file operations
         "bash" => vec!["Bash"],
         "task" => vec!["Task"],
+        "read" => vec!["Read", "Glob", "Grep"],
+        "grep" => vec!["Grep", "Read", "Glob"],
         _ => vec![tool],
     };
 
@@ -187,8 +190,15 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         return format_success_patterns(&patterns);
     }
 
-    // If no tool-specific patterns, don't show failure patterns
-    // (they're too generic to be useful)
+    // If no tool-specific patterns found, try to get ANY successful patterns
+    // (better than showing nothing)
+    let fallback_patterns = store.get_top_patterns(MAX_PATTERNS)?;
+    if !fallback_patterns.is_empty() {
+        debug!("Using {} fallback patterns", fallback_patterns.len());
+        return format_success_patterns(&fallback_patterns);
+    }
+
+    // No patterns available at all
     Ok(ContextInjection {
         context_block: String::new(),
         patterns_used: vec![],

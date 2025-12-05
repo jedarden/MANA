@@ -152,4 +152,31 @@ impl PatternStore {
 
         Ok(changes as u64)
     }
+
+    /// Get top patterns across all tool types (for fallback)
+    pub fn get_top_patterns(&self, limit: usize) -> Result<Vec<Pattern>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, pattern_hash, tool_type, context_query, success_count, failure_count, embedding_id
+            FROM patterns
+            WHERE tool_type != 'failure'
+            ORDER BY (success_count - failure_count) DESC, success_count DESC
+            LIMIT ?1
+            "#,
+        )?;
+
+        let patterns = stmt.query_map(params![limit as i64], |row| {
+            Ok(Pattern {
+                id: row.get(0)?,
+                pattern_hash: row.get(1)?,
+                tool_type: row.get(2)?,
+                context_query: row.get(3)?,
+                success_count: row.get(4)?,
+                failure_count: row.get(5)?,
+                embedding_id: row.get(6)?,
+            })
+        })?;
+
+        patterns.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
 }
