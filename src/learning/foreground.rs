@@ -108,12 +108,16 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
 fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     let mut patterns = Vec::new();
 
-    // Create patterns for each tool call
+    // Create patterns for each tool call with rich context
     for tool_call in trajectory.tool_calls.iter().take(MAX_PATTERNS_PER_TRAJECTORY) {
+        // Extract meaningful context from tool input
+        let tool_context = extract_tool_context(&tool_call.tool_name, &tool_call.tool_input);
+
         let context_query = format!(
-            "User asked: {}\nApproach: Used {} tool",
-            truncate(&trajectory.user_query, 200),
-            tool_call.tool_name
+            "Task: {}\nApproach: {} - {}\nOutcome: Success",
+            truncate(&trajectory.user_query, 150),
+            tool_call.tool_name,
+            tool_context
         );
 
         let pattern_hash = hash_string(&context_query);
@@ -153,6 +157,85 @@ fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     patterns
 }
 
+/// Extract meaningful context from tool input
+fn extract_tool_context(tool_name: &str, input: &serde_json::Value) -> String {
+    match tool_name {
+        "Edit" | "Write" | "MultiEdit" => {
+            let file_path = input.get("file_path")
+                .and_then(|v| v.as_str())
+                .map(|p| extract_filename(p))
+                .unwrap_or("unknown file");
+            let old_str_preview = input.get("old_string")
+                .and_then(|v| v.as_str())
+                .map(|s| truncate(s, 50))
+                .unwrap_or("");
+            if !old_str_preview.is_empty() {
+                format!("editing {} (replacing '{}')", file_path, old_str_preview)
+            } else {
+                format!("writing to {}", file_path)
+            }
+        }
+        "Bash" => {
+            let cmd = input.get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown command");
+            let first_word = cmd.split_whitespace().next().unwrap_or("cmd");
+            let desc = input.get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !desc.is_empty() {
+                format!("{} - {}", first_word, truncate(desc, 60))
+            } else {
+                format!("running '{}'", truncate(cmd, 80))
+            }
+        }
+        "Read" | "Glob" | "Grep" => {
+            let path = input.get("file_path")
+                .or_else(|| input.get("path"))
+                .and_then(|v| v.as_str())
+                .map(|p| extract_filename(p))
+                .unwrap_or("");
+            let pattern = input.get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !pattern.is_empty() {
+                format!("searching for '{}' in {}", truncate(pattern, 30), path)
+            } else if !path.is_empty() {
+                format!("reading {}", path)
+            } else {
+                "exploring codebase".to_string()
+            }
+        }
+        "Task" => {
+            let agent = input.get("subagent_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("agent");
+            let desc = input.get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            format!("delegating to {} - {}", agent, truncate(desc, 60))
+        }
+        "TodoWrite" => {
+            "updating task list".to_string()
+        }
+        "WebSearch" | "WebFetch" => {
+            let query = input.get("query")
+                .or_else(|| input.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            format!("searching web: {}", truncate(query, 60))
+        }
+        _ => {
+            format!("using {} tool", tool_name)
+        }
+    }
+}
+
+/// Extract filename from path
+fn extract_filename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 /// Extract patterns from failed trajectories (what to avoid)
 fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     let mut patterns = Vec::new();
@@ -160,10 +243,13 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     // Find tool results with errors
     for result in &trajectory.tool_results {
         if result.is_error || result.content.to_lowercase().contains("error") {
+            // Extract the key error message (first line or key phrase)
+            let error_msg = extract_error_message(&result.content);
+
             let context_query = format!(
-                "AVOID: {}\nError: {}",
-                truncate(&trajectory.user_query, 150),
-                truncate(&result.content, 200)
+                "Task: {}\nPitfall: {}\nAdvice: Check this approach doesn't hit the same error",
+                truncate(&trajectory.user_query, 120),
+                error_msg
             );
 
             let pattern_hash = hash_string(&context_query);
@@ -185,6 +271,37 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     }
 
     patterns
+}
+
+/// Extract key error message from tool result
+fn extract_error_message(content: &str) -> String {
+    // Look for common error patterns
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Find line with "error" or "Error"
+    for line in &lines {
+        let lower = line.to_lowercase();
+        if lower.contains("error:") || lower.contains("failed:") {
+            return truncate(line.trim(), 150).to_string();
+        }
+    }
+
+    // Look for exit code
+    for line in &lines {
+        if line.contains("exit code") || line.contains("Exit code") {
+            return truncate(line.trim(), 150).to_string();
+        }
+    }
+
+    // First non-empty line
+    for line in &lines {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && trimmed.len() > 5 {
+            return truncate(trimmed, 150).to_string();
+        }
+    }
+
+    truncate(content, 150).to_string()
 }
 
 fn collect_jsonl_files(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -312,6 +429,7 @@ mod tests {
         let patterns = extract_failure_patterns(&trajectory);
         assert_eq!(patterns.len(), 1);
         assert_eq!(patterns[0].tool_type, "failure");
-        assert!(patterns[0].context_query.contains("AVOID"));
+        assert!(patterns[0].context_query.contains("Pitfall"));
+        assert!(patterns[0].context_query.contains("test failed"));
     }
 }

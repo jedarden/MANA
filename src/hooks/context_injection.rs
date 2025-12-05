@@ -206,22 +206,48 @@ fn extract_insight(context_query: &str) -> String {
     // Try to get the most relevant part
     let lines: Vec<&str> = context_query.lines().collect();
 
-    if lines.len() >= 2 {
-        // Return the approach line if it exists
-        if let Some(approach) = lines.iter().find(|l| l.starts_with("Approach:")) {
-            return approach.to_string();
+    // Build a combined insight from available lines
+    let mut insight_parts = Vec::new();
+
+    for line in &lines {
+        // Skip task line (we're displaying context, not repeating the task)
+        if line.starts_with("Task:") {
+            continue;
         }
-        // Or the response approach
-        if let Some(approach) = lines.iter().find(|l| l.starts_with("Response approach:")) {
-            return approach.to_string();
+        // Include approach info
+        if line.starts_with("Approach:") {
+            insight_parts.push(line.trim_start_matches("Approach:").trim());
         }
-        // Or the error if it's a failure
-        if let Some(error) = lines.iter().find(|l| l.starts_with("Error:")) {
-            return error.to_string();
+        // Include pitfall warnings
+        if line.starts_with("Pitfall:") {
+            insight_parts.push(line.trim_start_matches("Pitfall:").trim());
+        }
+        // Include advice
+        if line.starts_with("Advice:") {
+            insight_parts.push(line.trim_start_matches("Advice:").trim());
+        }
+        // Include response approach
+        if line.starts_with("Response approach:") {
+            insight_parts.push(line.trim_start_matches("Response approach:").trim());
         }
     }
 
-    // Fall back to first 100 chars
+    if !insight_parts.is_empty() {
+        return insight_parts.join(" | ");
+    }
+
+    // Fall back to first meaningful line
+    for line in &lines {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && trimmed.len() > 5 && !trimmed.starts_with("Task:") {
+            if trimmed.len() > 120 {
+                return format!("{}...", &trimmed[..120]);
+            }
+            return trimmed.to_string();
+        }
+    }
+
+    // Last resort: truncate entire query
     if context_query.len() > 100 {
         format!("{}...", &context_query[..100])
     } else {
