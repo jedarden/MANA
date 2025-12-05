@@ -253,11 +253,22 @@ fn is_file_extension(word: &str) -> bool {
 fn format_success_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
     let mut context_lines = Vec::new();
     let mut pattern_ids = Vec::new();
+    let mut seen_insights: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     context_lines.push("**Relevant patterns from previous successful operations:**".to_string());
     context_lines.push(String::new());
 
     for pattern in patterns {
+        // Extract key insight from context_query
+        let insight = extract_insight(&pattern.context_query);
+
+        // Skip duplicates in output (compare full insight, lowercased)
+        let normalized = insight.to_lowercase();
+        if seen_insights.contains(&normalized) {
+            continue;
+        }
+        seen_insights.insert(normalized);
+
         let score = pattern.success_count - pattern.failure_count;
         let confidence = if pattern.success_count + pattern.failure_count > 0 {
             (pattern.success_count as f64 / (pattern.success_count + pattern.failure_count) as f64) * 100.0
@@ -267,9 +278,6 @@ fn format_success_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
 
         context_lines.push(format!("- **{}** (score: {}, {:.0}% success rate)",
             pattern.tool_type, score, confidence));
-
-        // Extract key insight from context_query
-        let insight = extract_insight(&pattern.context_query);
         context_lines.push(format!("  {}", insight));
         context_lines.push(String::new());
 
