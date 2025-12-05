@@ -120,16 +120,27 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     // Open pattern store
     let store = PatternStore::open(&db_path)?;
 
-    // Map tool argument to database tool_type
-    let tool_type = match tool {
-        "edit" => "Edit",
-        "bash" => "Bash",
-        "task" => "Task",
-        _ => tool,
+    // Map tool argument to database tool_types (may need multiple)
+    let tool_types: Vec<&str> = match tool {
+        "edit" => vec!["Edit", "Write", "MultiEdit"],  // Edit hooks may have Write patterns
+        "bash" => vec!["Bash"],
+        "task" => vec!["Task"],
+        _ => vec![tool],
     };
 
-    // Get relevant patterns for this tool type
-    let mut patterns = store.get_by_tool(tool_type, MAX_PATTERNS * 2)?;
+    // Get relevant patterns for these tool types
+    let mut patterns: Vec<Pattern> = Vec::new();
+    for tool_type in &tool_types {
+        let mut type_patterns = store.get_by_tool(tool_type, MAX_PATTERNS * 2)?;
+        patterns.append(&mut type_patterns);
+    }
+    // Sort by score and truncate
+    patterns.sort_by(|a, b| {
+        let a_score = a.success_count - a.failure_count;
+        let b_score = b.success_count - b.failure_count;
+        b_score.cmp(&a_score)
+    });
+    patterns.truncate(MAX_PATTERNS * 2);
 
     // Score patterns by query relevance if query is not empty
     if !query.is_empty() {
