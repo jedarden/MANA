@@ -7,6 +7,7 @@ mod bench;
 mod embeddings;
 mod hooks;
 mod learning;
+mod reflection;
 mod storage;
 mod sync;
 mod update;
@@ -85,6 +86,12 @@ enum Commands {
     Embed {
         #[command(subcommand)]
         action: EmbedAction,
+    },
+
+    /// Reflection system for analyzing pattern effectiveness
+    Reflect {
+        #[command(subcommand)]
+        action: ReflectAction,
     },
 
     /// Export patterns to a file (for sync/sharing)
@@ -240,6 +247,35 @@ enum EmbedAction {
 
     /// Generate embeddings for patterns that don't have them
     Generate,
+}
+
+#[derive(Subcommand)]
+enum ReflectAction {
+    /// Show reflection system status and statistics
+    Status,
+
+    /// Run a manual reflection cycle
+    Run {
+        /// Trigger type label (manual by default)
+        #[arg(long, default_value = "manual")]
+        trigger: String,
+    },
+
+    /// Show recent verdicts
+    Verdicts {
+        /// Number of verdicts to show
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Analyze a specific pattern's reflection history
+    Analyze {
+        /// Pattern ID to analyze
+        pattern_id: i64,
+    },
+
+    /// Initialize reflection tables (run once)
+    Init,
 }
 
 #[derive(Subcommand)]
@@ -424,6 +460,235 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                             println!();
                         }
                     }
+                }
+            }
+        }
+        Commands::Reflect { action } => {
+            let mana_dir = get_mana_dir()?;
+            let db_path = mana_dir.join("metadata.sqlite");
+
+            match action {
+                ReflectAction::Status => {
+                    let status = reflection::get_reflection_status(&db_path)?;
+
+                    println!("Reflection Status");
+                    println!("=================");
+                    println!();
+
+                    if !status.tables_exist {
+                        println!("Reflection tables not initialized.");
+                        println!();
+                        println!("Run 'mana reflect init' to set up reflection.");
+                        return Ok(());
+                    }
+
+                    println!("Total verdicts: {}", status.total_verdicts);
+                    println!("  Effective: {} ({})",
+                        status.effective_count,
+                        format_emoji(status.effective_count, "check"));
+                    println!("  Neutral: {}", status.neutral_count);
+                    println!("  Ineffective: {}", status.ineffective_count);
+                    println!("  Harmful: {} ({})",
+                        status.harmful_count,
+                        format_emoji(status.harmful_count, "warning"));
+                    println!();
+                    println!("Reflection cycles: {}", status.total_cycles);
+
+                    if status.last_trigger.is_some() {
+                        println!();
+                        println!("Last cycle:");
+                        println!("  Trigger: {}", status.last_trigger.as_ref().unwrap());
+                        println!("  Trajectories: {}", status.last_trajectories);
+                        println!("  Verdicts: {}", status.last_verdicts);
+                        println!("  Duration: {}ms", status.last_duration_ms);
+                    }
+                }
+                ReflectAction::Run { trigger } => {
+                    use std::time::Instant;
+
+                    println!("Running reflection cycle ({})...", trigger);
+
+                    // Initialize tables if needed
+                    let conn = rusqlite::Connection::open(&db_path)?;
+                    reflection::init_reflection_tables(&conn)?;
+
+                    // Parse recent trajectories
+                    let start = Instant::now();
+                    let log_dir = dirs::home_dir()
+                        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+                        .join(".claude")
+                        .join("projects");
+
+                    let mut all_trajectories = Vec::new();
+                    if log_dir.exists() {
+                        for entry in std::fs::read_dir(&log_dir)? {
+                            let entry = entry?;
+                            let path = entry.path();
+                            if path.is_dir() {
+                                let log_file = path.join("logs.jsonl");
+                                if log_file.exists() {
+                                    if let Ok(trajectories) = learning::trajectory::parse_trajectories(&log_file, 0) {
+                                        all_trajectories.extend(trajectories);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if all_trajectories.is_empty() {
+                        println!("No trajectories found for reflection.");
+                        return Ok(());
+                    }
+
+                    println!("Found {} trajectories to analyze", all_trajectories.len());
+
+                    // Run reflection
+                    let config = reflection::ReflectionConfig::default();
+                    let engine = reflection::ReflectionEngine::new(config);
+
+                    let verdicts = engine.reflect(&all_trajectories)?;
+                    let updated = engine.apply_verdicts(&conn, &verdicts)?;
+
+                    let duration = start.elapsed();
+
+                    // Log the cycle
+                    reflection::log_reflection_cycle(
+                        &conn,
+                        &trigger,
+                        all_trajectories.len(),
+                        verdicts.len(),
+                        updated,
+                        0, // new patterns
+                        0, // demoted
+                        duration.as_millis() as u64,
+                    )?;
+
+                    println!();
+                    println!("Reflection complete:");
+                    println!("  Trajectories analyzed: {}", all_trajectories.len());
+                    println!("  Verdicts produced: {}", verdicts.len());
+                    println!("  Patterns updated: {}", updated);
+                    println!("  Duration: {:?}", duration);
+                }
+                ReflectAction::Verdicts { limit } => {
+                    let conn = rusqlite::Connection::open(&db_path)?;
+
+                    let mut stmt = conn.prepare(
+                        "SELECT trajectory_hash, pattern_id, verdict, confidence, root_cause, created_at
+                         FROM reflection_verdicts
+                         ORDER BY created_at DESC
+                         LIMIT ?1"
+                    )?;
+
+                    let verdicts: Vec<(String, Option<i64>, String, f64, Option<String>, String)> = stmt
+                        .query_map([limit as i64], |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        })?
+                        .filter_map(|r| r.ok())
+                        .collect();
+
+                    if verdicts.is_empty() {
+                        println!("No verdicts found.");
+                        println!();
+                        println!("Run 'mana reflect run' to generate verdicts.");
+                        return Ok(());
+                    }
+
+                    println!("Recent Verdicts");
+                    println!("===============");
+                    println!();
+
+                    for (hash, pattern_id, verdict, confidence, root_cause, created_at) in verdicts {
+                        let emoji = match verdict.as_str() {
+                            "EFFECTIVE" => "",
+                            "HARMFUL" => "",
+                            "INEFFECTIVE" => "",
+                            _ => "",
+                        };
+                        let pattern_str = pattern_id
+                            .map(|id| format!("pattern #{}", id))
+                            .unwrap_or_else(|| "no pattern".into());
+
+                        println!("{} {} ({:.0}% confidence)", emoji, verdict, confidence * 100.0);
+                        println!("   Trajectory: {}...", &hash[..8]);
+                        println!("   {}", pattern_str);
+                        if let Some(cause) = root_cause {
+                            println!("   Root cause: {}", cause);
+                        }
+                        println!("   {}", created_at);
+                        println!();
+                    }
+                }
+                ReflectAction::Analyze { pattern_id } => {
+                    let conn = rusqlite::Connection::open(&db_path)?;
+
+                    // Get pattern info
+                    let pattern: Option<(String, String, i64, i64)> = conn.query_row(
+                        "SELECT tool_type, context_query, success_count, failure_count
+                         FROM patterns WHERE id = ?1",
+                        [pattern_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    ).ok();
+
+                    match pattern {
+                        Some((tool_type, context, success, failure)) => {
+                            println!("Pattern Analysis: #{}", pattern_id);
+                            println!("=================={}", "=".repeat(pattern_id.to_string().len()));
+                            println!();
+                            println!("Tool type: {}", tool_type);
+                            println!("Context: {}", context);
+                            println!("Success/Failure: {}/{}", success, failure);
+                            println!();
+
+                            // Get verdict stats
+                            let stats = reflection::MemoryDistiller::get_pattern_stats(&conn, pattern_id)?;
+
+                            if stats.total > 0 {
+                                println!("Reflection History:");
+                                println!("  Total verdicts: {}", stats.total);
+                                println!("  Effective: {} ({:.0}%)",
+                                    stats.effective,
+                                    stats.effectiveness_ratio() * 100.0);
+                                println!("  Harmful: {} ({:.0}%)",
+                                    stats.harmful,
+                                    stats.harm_ratio() * 100.0);
+                                println!("  Avg confidence: {:.2}", stats.avg_confidence);
+
+                                // Get recent verdicts
+                                println!();
+                                println!("Recent verdicts:");
+                                let verdicts = reflection::MemoryDistiller::get_pattern_verdicts(&conn, pattern_id, 5)?;
+                                for v in verdicts {
+                                    let emoji = match v.category.as_str() {
+                                        "EFFECTIVE" => "",
+                                        "HARMFUL" => "",
+                                        _ => "",
+                                    };
+                                    println!("  {} {} ({:.0}%)", emoji, v.category, v.confidence * 100.0);
+                                    if let Some(cause) = v.root_cause {
+                                        println!("     {}", cause);
+                                    }
+                                }
+                            } else {
+                                println!("No reflection verdicts for this pattern.");
+                            }
+                        }
+                        None => {
+                            println!("Pattern #{} not found.", pattern_id);
+                        }
+                    }
+                }
+                ReflectAction::Init => {
+                    let conn = rusqlite::Connection::open(&db_path)?;
+                    reflection::init_reflection_tables(&conn)?;
+                    println!("Reflection tables initialized.");
                 }
             }
         }
@@ -874,4 +1139,16 @@ fn get_mana_dir() -> Result<std::path::PathBuf> {
     let home = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     Ok(home.join(".mana"))
+}
+
+/// Format count with appropriate emoji for status display
+fn format_emoji(count: i64, kind: &str) -> String {
+    if count == 0 {
+        return String::new();
+    }
+    match kind {
+        "check" => "".to_string(),
+        "warning" => "".to_string(),
+        _ => String::new(),
+    }
 }
