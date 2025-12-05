@@ -224,10 +224,8 @@ pub async fn show_stats() -> Result<()> {
     })?;
 
     println!("  By tool type:");
-    for result in tool_counts {
-        if let Ok((tool, count)) = result {
-            println!("    {}: {}", tool, count);
-        }
+    for (tool, count) in tool_counts.flatten() {
+        println!("    {}: {}", tool, count);
     }
 
     // Success rate

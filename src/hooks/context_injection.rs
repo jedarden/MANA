@@ -294,7 +294,7 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
 
 /// Filter out patterns that conflict with top-ranked patterns
 /// This uses causal edges to prevent recommending incompatible patterns together
-fn filter_causal_conflicts(db_path: &PathBuf, mut patterns: Vec<(Pattern, f64)>) -> Vec<(Pattern, f64)> {
+fn filter_causal_conflicts(db_path: &std::path::Path, mut patterns: Vec<(Pattern, f64)>) -> Vec<(Pattern, f64)> {
     if patterns.is_empty() {
         return patterns;
     }
@@ -499,9 +499,9 @@ fn format_approach_hint(approach: &str) -> String {
             // Format based on tool type
             match *tool {
                 "Bash" => format!("Ran `{}`: {}", cmd, truncate_str(desc, 60)),
-                "Edit" | "MultiEdit" => format!("{}", truncate_str(desc, 80)),
-                "Write" => format!("{}", truncate_str(desc, 80)),
-                "Read" | "Glob" | "Grep" => format!("{}", truncate_str(desc, 80)),
+                "Edit" | "MultiEdit" => truncate_str(desc, 80).to_string(),
+                "Write" => truncate_str(desc, 80).to_string(),
+                "Read" | "Glob" | "Grep" => truncate_str(desc, 80).to_string(),
                 "Task" => {
                     // Handle "delegating to agent - description" format
                     // cmd is like "delegating to researcher", extract agent name
@@ -512,7 +512,7 @@ fn format_approach_hint(approach: &str) -> String {
             }
         }
         [_tool, desc] => {
-            format!("{}", truncate_str(desc, 80))
+            truncate_str(desc, 80).to_string()
         }
         _ => truncate_str(approach, 80).to_string(),
     }
@@ -602,7 +602,7 @@ fn build_query(tool: &str, input: &ToolInputFields) -> String {
         },
         "web" => {
             // For web tools, build query from the input
-            format!("Web search")
+            "Web search".to_string()
         },
         _ => format!("Tool: {}", tool),
     }

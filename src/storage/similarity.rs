@@ -126,7 +126,7 @@ fn tokenize(text: &str) -> Vec<String> {
         .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .filter(|s| s.len() >= 2)
         .filter(|s| !is_stopword(s))
-        .map(|s| stem_word(s))
+        .map(stem_word)
         .collect()
 }
 

@@ -10,6 +10,7 @@ use tracing::debug;
 
 /// A causal edge representing a relationship between two patterns
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CausalEdge {
     pub id: i64,
     pub pattern_a_id: i64,
@@ -153,6 +154,7 @@ impl CausalStore {
     }
 
     /// Get count of causal edges
+    #[allow(dead_code)]
     pub fn count(&self) -> Result<i64> {
         self.conn.query_row("SELECT COUNT(*) FROM causal_edges", [], |row| row.get(0))
             .map_err(Into::into)

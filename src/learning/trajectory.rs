@@ -100,7 +100,7 @@ pub fn parse_trajectories(path: &Path, start_offset: u64) -> Result<Vec<Trajecto
         };
 
         let session_id = msg.session_id.clone().unwrap_or_else(|| default_session.clone());
-        let session = sessions.entry(session_id).or_insert_with(SessionData::default);
+        let session = sessions.entry(session_id).or_default();
 
         match msg_type {
             "user" => {
@@ -136,13 +136,14 @@ pub fn parse_trajectories(path: &Path, start_offset: u64) -> Result<Vec<Trajecto
                         // Also capture plain user text for the query
                         if let Some(text) = extract_text_content(content) {
                             // Skip command messages
-                            if !text.contains("<command-") &&
-                               !text.contains("<local-command") &&
-                               !text.contains("Caveat:") &&
-                               !text.is_empty() {
-                                if session.user_query.is_empty() && text.len() > 5 {
-                                    session.user_query = text;
-                                }
+                            if !text.contains("<command-")
+                               && !text.contains("<local-command")
+                               && !text.contains("Caveat:")
+                               && !text.is_empty()
+                               && session.user_query.is_empty()
+                               && text.len() > 5
+                            {
+                                session.user_query = text;
                             }
                         }
                     }
@@ -266,15 +267,7 @@ fn judge_trajectory(trajectory: &Trajectory) -> Verdict {
     let has_tool_execution = !trajectory.tool_calls.is_empty();
 
     // Scoring heuristics: If tools ran without explicit errors, consider it success
-    let success = if has_errors {
-        false
-    } else if has_tool_execution {
-        true  // Tools ran without errors = success
-    } else if has_completion {
-        true
-    } else {
-        false
-    };
+    let success = !has_errors && (has_tool_execution || has_completion);
 
     let confidence = if has_errors {
         0.8

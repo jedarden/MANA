@@ -78,8 +78,8 @@ fn merge_similar_patterns(db_path: &PathBuf) -> Result<usize> {
                 continue;
             }
 
-            for j in (i + 1)..type_patterns.len() {
-                let (id_j, ref ctx_j, success_j, failure_j) = type_patterns[j];
+            for (id_j, ctx_j, success_j, failure_j) in type_patterns.iter().skip(i + 1) {
+                let (id_j, ctx_j, success_j, failure_j) = (*id_j, ctx_j, *success_j, *failure_j);
 
                 // Skip if already merged
                 if merged_into.contains_key(&id_j) {

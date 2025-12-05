@@ -351,7 +351,7 @@ fn extract_tool_context(tool_name: &str, input: &serde_json::Value) -> String {
             let path = input.get("file_path")
                 .or_else(|| input.get("path"))
                 .and_then(|v| v.as_str())
-                .map(|p| extract_filename(p))
+                .map(extract_filename)
                 .unwrap_or("");
             let pattern = input.get("pattern")
                 .and_then(|v| v.as_str())
