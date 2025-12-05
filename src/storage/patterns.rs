@@ -15,6 +15,9 @@ pub struct Pattern {
     pub id: i64,
     pub pattern_hash: String,
     pub tool_type: String,
+    /// For Bash patterns, the primary command (cargo, npm, git, etc.)
+    /// For Edit patterns, the file extension (rs, ts, py, etc.)
+    pub command_category: Option<String>,
     pub context_query: String,
     pub success_count: i64,
     pub failure_count: i64,
@@ -93,12 +96,13 @@ impl PatternStore {
         self.conn.execute(
             r#"
             INSERT OR REPLACE INTO patterns
-            (pattern_hash, tool_type, context_query, success_count, failure_count, embedding_id)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             "#,
             params![
                 pattern.pattern_hash,
                 pattern.tool_type,
+                pattern.command_category,
                 pattern.context_query,
                 pattern.success_count,
                 pattern.failure_count,
@@ -113,7 +117,7 @@ impl PatternStore {
     pub fn get_by_tool(&self, tool_type: &str, limit: usize) -> Result<Vec<Pattern>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, pattern_hash, tool_type, context_query, success_count, failure_count, embedding_id
+            SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
             FROM patterns
             WHERE tool_type = ?1
             ORDER BY (success_count - failure_count) DESC, success_count DESC
@@ -126,14 +130,52 @@ impl PatternStore {
                 id: row.get(0)?,
                 pattern_hash: row.get(1)?,
                 tool_type: row.get(2)?,
-                context_query: row.get(3)?,
-                success_count: row.get(4)?,
-                failure_count: row.get(5)?,
-                embedding_id: row.get(6)?,
+                command_category: row.get(3)?,
+                context_query: row.get(4)?,
+                success_count: row.get(5)?,
+                failure_count: row.get(6)?,
+                embedding_id: row.get(7)?,
             })
         })?;
 
         patterns.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get patterns by tool type and command category
+    /// This is more efficient for Bash patterns where we want cargo vs npm vs git
+    pub fn get_by_tool_and_category(&self, tool_type: &str, category: Option<&str>, limit: usize) -> Result<Vec<Pattern>> {
+        match category {
+            Some(cat) => {
+                let mut stmt = self.conn.prepare(
+                    r#"
+                    SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
+                    FROM patterns
+                    WHERE tool_type = ?1 AND command_category = ?2
+                    ORDER BY (success_count - failure_count) DESC, success_count DESC
+                    LIMIT ?3
+                    "#,
+                )?;
+
+                let patterns = stmt.query_map(params![tool_type, cat, limit as i64], |row| {
+                    Ok(Pattern {
+                        id: row.get(0)?,
+                        pattern_hash: row.get(1)?,
+                        tool_type: row.get(2)?,
+                        command_category: row.get(3)?,
+                        context_query: row.get(4)?,
+                        success_count: row.get(5)?,
+                        failure_count: row.get(6)?,
+                        embedding_id: row.get(7)?,
+                    })
+                })?;
+
+                patterns.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+            }
+            None => {
+                // Fall back to get_by_tool when no category specified
+                self.get_by_tool(tool_type, limit)
+            }
+        }
     }
 
     /// Update pattern success/failure counts
@@ -157,7 +199,7 @@ impl PatternStore {
     pub fn get_by_id(&self, id: i64) -> Result<Option<Pattern>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, pattern_hash, tool_type, context_query, success_count, failure_count, embedding_id
+            SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
             FROM patterns
             WHERE id = ?1
             "#,
@@ -170,10 +212,11 @@ impl PatternStore {
                 id: row.get(0)?,
                 pattern_hash: row.get(1)?,
                 tool_type: row.get(2)?,
-                context_query: row.get(3)?,
-                success_count: row.get(4)?,
-                failure_count: row.get(5)?,
-                embedding_id: row.get(6)?,
+                command_category: row.get(3)?,
+                context_query: row.get(4)?,
+                success_count: row.get(5)?,
+                failure_count: row.get(6)?,
+                embedding_id: row.get(7)?,
             }))
         } else {
             Ok(None)
@@ -215,7 +258,7 @@ impl PatternStore {
     pub fn get_patterns_below_score(&self, min_score: i64) -> Result<Vec<Pattern>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, pattern_hash, tool_type, context_query, success_count, failure_count, embedding_id
+            SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
             FROM patterns
             WHERE (success_count - failure_count) < ?1
             ORDER BY (success_count - failure_count) ASC
@@ -227,10 +270,11 @@ impl PatternStore {
                 id: row.get(0)?,
                 pattern_hash: row.get(1)?,
                 tool_type: row.get(2)?,
-                context_query: row.get(3)?,
-                success_count: row.get(4)?,
-                failure_count: row.get(5)?,
-                embedding_id: row.get(6)?,
+                command_category: row.get(3)?,
+                context_query: row.get(4)?,
+                success_count: row.get(5)?,
+                failure_count: row.get(6)?,
+                embedding_id: row.get(7)?,
             })
         })?;
 
@@ -241,7 +285,7 @@ impl PatternStore {
     pub fn get_top_patterns(&self, limit: usize) -> Result<Vec<Pattern>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, pattern_hash, tool_type, context_query, success_count, failure_count, embedding_id
+            SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
             FROM patterns
             WHERE tool_type != 'failure'
             ORDER BY (success_count - failure_count) DESC, success_count DESC
@@ -254,10 +298,11 @@ impl PatternStore {
                 id: row.get(0)?,
                 pattern_hash: row.get(1)?,
                 tool_type: row.get(2)?,
-                context_query: row.get(3)?,
-                success_count: row.get(4)?,
-                failure_count: row.get(5)?,
-                embedding_id: row.get(6)?,
+                command_category: row.get(3)?,
+                context_query: row.get(4)?,
+                success_count: row.get(5)?,
+                failure_count: row.get(6)?,
+                embedding_id: row.get(7)?,
             })
         })?;
 

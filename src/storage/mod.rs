@@ -34,6 +34,7 @@ pub async fn init() -> Result<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             pattern_hash TEXT UNIQUE NOT NULL,
             tool_type TEXT NOT NULL,
+            command_category TEXT,
             context_query TEXT NOT NULL,
             success_count INTEGER DEFAULT 0,
             failure_count INTEGER DEFAULT 0,
@@ -79,6 +80,21 @@ pub async fn init() -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_causal_pattern_b ON causal_edges(pattern_b_id);
         "#,
     )?;
+
+    // Migration: add command_category column if it doesn't exist (for existing databases)
+    let has_category: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('patterns') WHERE name = 'command_category'",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? > 0),
+    ).unwrap_or(false);
+
+    if !has_category {
+        conn.execute("ALTER TABLE patterns ADD COLUMN command_category TEXT", [])?;
+        info!("Migrated patterns table to add command_category column");
+    }
+
+    // Always ensure the category index exists
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_patterns_category ON patterns(command_category)", [])?;
 
     info!("MANA initialized at {:?}", mana_dir);
 

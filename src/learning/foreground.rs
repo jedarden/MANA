@@ -146,6 +146,9 @@ fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
                     continue;
                 }
 
+                // Extract command category for better filtering
+                let command_category = extract_command_category(&tool_call.tool_name, &tool_call.tool_input);
+
                 let context_query = format!(
                     "Task: {}\nApproach: {} - {}\nOutcome: Success",
                     task_category,
@@ -159,6 +162,7 @@ fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
                     id: 0,  // Will be set by database
                     pattern_hash,
                     tool_type: tool_call.tool_name.clone(),
+                    command_category,
                     context_query,
                     success_count: 1,
                     failure_count: 0,
@@ -170,6 +174,77 @@ fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     }
 
     patterns
+}
+
+/// Extract command category for grouping similar patterns
+/// For Bash: returns the primary command (cargo, npm, git, etc.)
+/// For Edit/Write: returns the file extension (rs, ts, py, etc.)
+fn extract_command_category(tool_name: &str, input: &serde_json::Value) -> Option<String> {
+    match tool_name {
+        "Bash" => {
+            let cmd = input.get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let first_word = cmd.split_whitespace().next().unwrap_or("");
+
+            // Normalize common commands to categories
+            let category = match first_word {
+                // Rust ecosystem
+                "cargo" | "rustc" | "rustup" | "rustfmt" => "cargo",
+                // JavaScript ecosystem
+                "npm" | "npx" | "yarn" | "pnpm" | "node" | "deno" | "bun" => "npm",
+                // Python ecosystem
+                "pip" | "pip3" | "python" | "python3" | "pytest" | "poetry" | "uv" | "conda" => "python",
+                // Go ecosystem
+                "go" => "go",
+                // Git ecosystem
+                "git" | "gh" => "git",
+                // Docker ecosystem
+                "docker" | "docker-compose" | "podman" => "docker",
+                // Build tools
+                "make" | "cmake" | "ninja" => "make",
+                // Shell utilities (less useful to group, but still worth tracking)
+                "ls" | "cd" | "cat" | "mkdir" | "rm" | "cp" | "mv" => "shell",
+                "grep" | "find" | "sed" | "awk" => "shell",
+                _ => first_word,
+            };
+
+            if !category.is_empty() {
+                Some(category.to_string())
+            } else {
+                None
+            }
+        }
+        "Edit" | "Write" | "MultiEdit" => {
+            let file_path = input.get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let ext = extract_extension(file_path);
+            if !ext.is_empty() {
+                Some(ext.to_string())
+            } else {
+                None
+            }
+        }
+        "Read" | "Glob" => {
+            let file_path = input.get("file_path")
+                .or_else(|| input.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let ext = extract_extension(file_path);
+            if !ext.is_empty() {
+                Some(ext.to_string())
+            } else {
+                None
+            }
+        }
+        "Task" => {
+            input.get("subagent_type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        }
+        _ => None,
+    }
 }
 
 /// Extract patterns from successful trajectories
@@ -190,6 +265,9 @@ fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             continue;
         }
 
+        // Extract command category for better filtering
+        let command_category = extract_command_category(&tool_call.tool_name, &tool_call.tool_input);
+
         let context_query = format!(
             "Task: {}\nApproach: {} - {}\nOutcome: Success",
             task_category,
@@ -203,6 +281,7 @@ fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             id: 0,  // Will be set by database
             pattern_hash,
             tool_type: tool_call.tool_name.clone(),
+            command_category,
             context_query,
             success_count: 1,
             failure_count: 0,
@@ -416,6 +495,7 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
                 id: 0,
                 pattern_hash,
                 tool_type: "failure".to_string(),
+                command_category: None,
                 context_query,
                 success_count: 0,
                 failure_count: 1,
@@ -814,5 +894,104 @@ mod tests {
             extract_task_category("search for where errors are handled"),
             "Search codebase"
         );
+    }
+
+    #[test]
+    fn test_extract_command_category_bash() {
+        // Rust ecosystem
+        assert_eq!(
+            extract_command_category("Bash", &serde_json::json!({"command": "cargo build --release"})),
+            Some("cargo".to_string())
+        );
+        assert_eq!(
+            extract_command_category("Bash", &serde_json::json!({"command": "rustc --version"})),
+            Some("cargo".to_string())
+        );
+
+        // JavaScript ecosystem
+        assert_eq!(
+            extract_command_category("Bash", &serde_json::json!({"command": "npm install express"})),
+            Some("npm".to_string())
+        );
+        assert_eq!(
+            extract_command_category("Bash", &serde_json::json!({"command": "npx create-react-app my-app"})),
+            Some("npm".to_string())
+        );
+
+        // Python ecosystem
+        assert_eq!(
+            extract_command_category("Bash", &serde_json::json!({"command": "pip install requests"})),
+            Some("python".to_string())
+        );
+        assert_eq!(
+            extract_command_category("Bash", &serde_json::json!({"command": "pytest tests/"})),
+            Some("python".to_string())
+        );
+
+        // Git ecosystem
+        assert_eq!(
+            extract_command_category("Bash", &serde_json::json!({"command": "git status"})),
+            Some("git".to_string())
+        );
+        assert_eq!(
+            extract_command_category("Bash", &serde_json::json!({"command": "gh pr list"})),
+            Some("git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_command_category_edit() {
+        // Rust files
+        assert_eq!(
+            extract_command_category("Edit", &serde_json::json!({"file_path": "/src/main.rs"})),
+            Some("rs".to_string())
+        );
+
+        // TypeScript files
+        assert_eq!(
+            extract_command_category("Edit", &serde_json::json!({"file_path": "/src/App.tsx"})),
+            Some("tsx".to_string())
+        );
+
+        // Python files
+        assert_eq!(
+            extract_command_category("Write", &serde_json::json!({"file_path": "/app/main.py"})),
+            Some("py".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_command_category_task() {
+        assert_eq!(
+            extract_command_category("Task", &serde_json::json!({"subagent_type": "researcher"})),
+            Some("researcher".to_string())
+        );
+        assert_eq!(
+            extract_command_category("Task", &serde_json::json!({"subagent_type": "coder"})),
+            Some("coder".to_string())
+        );
+    }
+
+    #[test]
+    fn test_success_pattern_has_command_category() {
+        let trajectory = Trajectory {
+            session_id: "test".into(),
+            user_query: "Build the project".into(),
+            assistant_content: "Building...".into(),
+            tool_calls: vec![ToolCall {
+                tool_name: "Bash".into(),
+                tool_input: serde_json::json!({
+                    "command": "cargo build --release",
+                    "description": "Build release binary"
+                }),
+            }],
+            tool_results: vec![],
+            verdict: Some(Verdict { success: true, confidence: 0.9 }),
+        };
+
+        let patterns = extract_success_patterns(&trajectory);
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].tool_type, "Bash");
+        assert_eq!(patterns[0].command_category, Some("cargo".to_string()));
     }
 }
