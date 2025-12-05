@@ -68,7 +68,8 @@ const MIN_TECH_STACK_SIMILARITY: f64 = 0.35;
 /// Inject context from ReasoningBank based on tool input
 ///
 /// Reads JSON from stdin, queries for relevant patterns, outputs context to stdout.
-pub async fn inject_context(tool: &str) -> Result<()> {
+/// This is intentionally synchronous to avoid tokio runtime initialization overhead.
+pub fn inject_context(tool: &str) -> Result<()> {
     let start = Instant::now();
     debug!("Injecting context for tool: {}", tool);
 

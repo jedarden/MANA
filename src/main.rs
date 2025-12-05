@@ -278,7 +278,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Inject { tool } => {
-            hooks::inject_context(&tool).await?;
+            // Synchronous call to avoid tokio runtime overhead for injection hot path
+            hooks::inject_context(&tool)?;
         }
         Commands::SessionEnd => {
             info!("Processing session end");
