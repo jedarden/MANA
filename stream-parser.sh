@@ -1,7 +1,7 @@
 #!/bin/bash
 # MANA Stream-JSON Parser
 # Converts Claude Code stream-json output to human-readable format
-# Version 3.0 - Handles all tool_use_result types (text, create, bash)
+# Version 4.0 - Human-readable tool inputs (Bash, Read, Write, Edit, Glob, Grep, TodoWrite, Task)
 
 # Colors
 RED='\033[0;31m'
@@ -82,16 +82,73 @@ while IFS= read -r line; do
                     TOOL_INPUT=$(echo "$line" | jq -r '.message.content[0].input // {}' 2>/dev/null)
 
                     echo ""
-                    echo -e "${CYAN}${BOLD}▶ Tool: $TOOL_NAME${NC}"
 
-                    # Show full input, nicely formatted
-                    if [ -n "$TOOL_INPUT" ] && [ "$TOOL_INPUT" != "{}" ]; then
-                        echo -e "${GRAY}┌─ Input ─────────────────────────────────────────${NC}"
-                        echo "$TOOL_INPUT" | jq -r '.' 2>/dev/null | while IFS= read -r input_line; do
-                            echo -e "${GRAY}│ $input_line${NC}"
-                        done
-                        echo -e "${GRAY}└─────────────────────────────────────────────────${NC}"
-                    fi
+                    # Format tool-specific output
+                    case "$TOOL_NAME" in
+                        "Bash")
+                            CMD=$(echo "$TOOL_INPUT" | jq -r '.command // empty' 2>/dev/null)
+                            DESC=$(echo "$TOOL_INPUT" | jq -r '.description // empty' 2>/dev/null)
+                            echo -e "${CYAN}${BOLD}▶ Bash:${NC} ${WHITE}$CMD${NC}"
+                            if [ -n "$DESC" ] && [ "$DESC" != "null" ]; then
+                                echo -e "${GRAY}  └─ $DESC${NC}"
+                            fi
+                            ;;
+                        "Read")
+                            FILE=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
+                            echo -e "${CYAN}${BOLD}▶ Read:${NC} ${WHITE}$FILE${NC}"
+                            ;;
+                        "Write")
+                            FILE=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
+                            CONTENT=$(echo "$TOOL_INPUT" | jq -r '.content // empty' 2>/dev/null)
+                            LINES=$(echo "$CONTENT" | wc -l)
+                            echo -e "${CYAN}${BOLD}▶ Write:${NC} ${WHITE}$FILE${NC} ${GRAY}($LINES lines)${NC}"
+                            ;;
+                        "Edit")
+                            FILE=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
+                            OLD=$(echo "$TOOL_INPUT" | jq -r '.old_string // empty' 2>/dev/null | head -1)
+                            echo -e "${CYAN}${BOLD}▶ Edit:${NC} ${WHITE}$FILE${NC}"
+                            if [ -n "$OLD" ]; then
+                                echo -e "${GRAY}  └─ replacing: \"${OLD:0:60}...\"${NC}"
+                            fi
+                            ;;
+                        "Glob")
+                            PATTERN=$(echo "$TOOL_INPUT" | jq -r '.pattern // empty' 2>/dev/null)
+                            echo -e "${CYAN}${BOLD}▶ Glob:${NC} ${WHITE}$PATTERN${NC}"
+                            ;;
+                        "Grep")
+                            PATTERN=$(echo "$TOOL_INPUT" | jq -r '.pattern // empty' 2>/dev/null)
+                            PATH_ARG=$(echo "$TOOL_INPUT" | jq -r '.path // empty' 2>/dev/null)
+                            echo -e "${CYAN}${BOLD}▶ Grep:${NC} ${WHITE}$PATTERN${NC}"
+                            if [ -n "$PATH_ARG" ] && [ "$PATH_ARG" != "null" ]; then
+                                echo -e "${GRAY}  └─ in: $PATH_ARG${NC}"
+                            fi
+                            ;;
+                        "TodoWrite")
+                            TODO_COUNT=$(echo "$TOOL_INPUT" | jq -r '.todos | length // 0' 2>/dev/null)
+                            echo -e "${CYAN}${BOLD}▶ TodoWrite:${NC} ${WHITE}$TODO_COUNT items${NC}"
+                            # Show each todo briefly
+                            echo "$TOOL_INPUT" | jq -r '.todos[]? | "  " + (if .status == "completed" then "✅" elif .status == "in_progress" then "🔄" else "⏳" end) + " " + .content' 2>/dev/null | head -8
+                            ;;
+                        "Task")
+                            DESC=$(echo "$TOOL_INPUT" | jq -r '.description // empty' 2>/dev/null)
+                            AGENT=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty' 2>/dev/null)
+                            echo -e "${CYAN}${BOLD}▶ Task:${NC} ${WHITE}$DESC${NC}"
+                            if [ -n "$AGENT" ] && [ "$AGENT" != "null" ]; then
+                                echo -e "${GRAY}  └─ agent: $AGENT${NC}"
+                            fi
+                            ;;
+                        *)
+                            # Default: show tool name and formatted JSON
+                            echo -e "${CYAN}${BOLD}▶ Tool: $TOOL_NAME${NC}"
+                            if [ -n "$TOOL_INPUT" ] && [ "$TOOL_INPUT" != "{}" ]; then
+                                echo -e "${GRAY}┌─ Input ─────────────────────────────────────────${NC}"
+                                echo "$TOOL_INPUT" | jq -r '.' 2>/dev/null | while IFS= read -r input_line; do
+                                    echo -e "${GRAY}│ $input_line${NC}"
+                                done
+                                echo -e "${GRAY}└─────────────────────────────────────────────────${NC}"
+                            fi
+                            ;;
+                    esac
                     ;;
             esac
             ;;
@@ -225,17 +282,52 @@ while IFS= read -r line; do
         "tool_use")
             # Direct tool_use event
             TOOL=$(echo "$line" | jq -r '.name // empty' 2>/dev/null)
-            echo -e "\n${CYAN}${BOLD}▶ Tool: $TOOL${NC}"
-
-            # Show FULL input
             INPUT=$(echo "$line" | jq -r '.input // {}' 2>/dev/null)
-            if [ -n "$INPUT" ] && [ "$INPUT" != "{}" ]; then
-                echo -e "${GRAY}┌─ Input ─────────────────────────────────────────${NC}"
-                echo "$INPUT" | jq -r '.' 2>/dev/null | while IFS= read -r input_line; do
-                    echo -e "${GRAY}│ $input_line${NC}"
-                done
-                echo -e "${GRAY}└─────────────────────────────────────────────────${NC}"
-            fi
+
+            echo ""
+            case "$TOOL" in
+                "Bash")
+                    CMD=$(echo "$INPUT" | jq -r '.command // empty' 2>/dev/null)
+                    DESC=$(echo "$INPUT" | jq -r '.description // empty' 2>/dev/null)
+                    echo -e "${CYAN}${BOLD}▶ Bash:${NC} ${WHITE}$CMD${NC}"
+                    [ -n "$DESC" ] && [ "$DESC" != "null" ] && echo -e "${GRAY}  └─ $DESC${NC}"
+                    ;;
+                "Read")
+                    FILE=$(echo "$INPUT" | jq -r '.file_path // empty' 2>/dev/null)
+                    echo -e "${CYAN}${BOLD}▶ Read:${NC} ${WHITE}$FILE${NC}"
+                    ;;
+                "Write")
+                    FILE=$(echo "$INPUT" | jq -r '.file_path // empty' 2>/dev/null)
+                    echo -e "${CYAN}${BOLD}▶ Write:${NC} ${WHITE}$FILE${NC}"
+                    ;;
+                "Edit")
+                    FILE=$(echo "$INPUT" | jq -r '.file_path // empty' 2>/dev/null)
+                    echo -e "${CYAN}${BOLD}▶ Edit:${NC} ${WHITE}$FILE${NC}"
+                    ;;
+                "Glob")
+                    PATTERN=$(echo "$INPUT" | jq -r '.pattern // empty' 2>/dev/null)
+                    echo -e "${CYAN}${BOLD}▶ Glob:${NC} ${WHITE}$PATTERN${NC}"
+                    ;;
+                "Grep")
+                    PATTERN=$(echo "$INPUT" | jq -r '.pattern // empty' 2>/dev/null)
+                    echo -e "${CYAN}${BOLD}▶ Grep:${NC} ${WHITE}$PATTERN${NC}"
+                    ;;
+                "TodoWrite")
+                    TODO_COUNT=$(echo "$INPUT" | jq -r '.todos | length // 0' 2>/dev/null)
+                    echo -e "${CYAN}${BOLD}▶ TodoWrite:${NC} ${WHITE}$TODO_COUNT items${NC}"
+                    echo "$INPUT" | jq -r '.todos[]? | "  " + (if .status == "completed" then "✅" elif .status == "in_progress" then "🔄" else "⏳" end) + " " + .content' 2>/dev/null | head -8
+                    ;;
+                *)
+                    echo -e "${CYAN}${BOLD}▶ Tool: $TOOL${NC}"
+                    if [ -n "$INPUT" ] && [ "$INPUT" != "{}" ]; then
+                        echo -e "${GRAY}┌─ Input ─────────────────────────────────────────${NC}"
+                        echo "$INPUT" | jq -r '.' 2>/dev/null | while IFS= read -r input_line; do
+                            echo -e "${GRAY}│ $input_line${NC}"
+                        done
+                        echo -e "${GRAY}└─────────────────────────────────────────────────${NC}"
+                    fi
+                    ;;
+            esac
             ;;
 
         "tool_result")
