@@ -59,8 +59,88 @@ impl PatternStore {
         Ok(Self { conn })
     }
 
+    /// Fast insert without similarity checks - uses hash-based deduplication
+    ///
+    /// For bulk loading during learning. Uses INSERT OR IGNORE with pattern_hash
+    /// as a uniqueness check. This is O(1) per insert vs O(n) for similarity-based.
+    /// Similarity-based consolidation should run separately in background.
+    pub fn insert_fast(&self, pattern: &Pattern) -> Result<i64> {
+        // Use INSERT OR IGNORE - if pattern_hash already exists, skip silently
+        // If it's a duplicate hash, increment the success count instead
+        let changes = self.conn.execute(
+            r#"
+            INSERT INTO patterns
+            (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(pattern_hash) DO UPDATE SET
+                success_count = success_count + excluded.success_count,
+                failure_count = failure_count + excluded.failure_count,
+                last_used = CURRENT_TIMESTAMP
+            "#,
+            params![
+                pattern.pattern_hash,
+                pattern.tool_type,
+                pattern.command_category,
+                pattern.context_query,
+                pattern.success_count,
+                pattern.failure_count,
+                pattern.embedding_id
+            ],
+        )?;
+
+        if changes > 0 {
+            Ok(self.conn.last_insert_rowid())
+        } else {
+            // Pattern was merged with existing
+            Ok(0)
+        }
+    }
+
+    /// Batch insert patterns in a single transaction
+    ///
+    /// Much faster than individual inserts for bulk loading.
+    /// Uses a single transaction to batch all inserts, reducing disk I/O.
+    pub fn insert_batch(&mut self, patterns: &[Pattern]) -> Result<usize> {
+        // Start a transaction for the batch
+        let tx = self.conn.transaction()?;
+
+        let mut inserted = 0;
+        {
+            let mut stmt = tx.prepare_cached(
+                r#"
+                INSERT INTO patterns
+                (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ON CONFLICT(pattern_hash) DO UPDATE SET
+                    success_count = success_count + excluded.success_count,
+                    failure_count = failure_count + excluded.failure_count,
+                    last_used = CURRENT_TIMESTAMP
+                "#,
+            )?;
+
+            for pattern in patterns {
+                if stmt.execute(params![
+                    pattern.pattern_hash,
+                    pattern.tool_type,
+                    pattern.command_category,
+                    pattern.context_query,
+                    pattern.success_count,
+                    pattern.failure_count,
+                    pattern.embedding_id
+                ]).is_ok() {
+                    inserted += 1;
+                }
+            }
+        }
+
+        tx.commit()?;
+        Ok(inserted)
+    }
+
     /// Insert a new pattern with similarity-based deduplication
     /// If a similar pattern exists (similarity > 0.85), we update it instead of creating a new one
+    ///
+    /// NOTE: This is slow for bulk operations. Use insert_fast() for learning.
     pub fn insert(&self, pattern: &Pattern) -> Result<i64> {
         use crate::storage::calculate_similarity;
 
