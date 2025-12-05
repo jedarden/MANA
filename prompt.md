@@ -8,11 +8,142 @@ You are an autonomous development agent responsible for building and improving M
 
 ## Your Mission
 
-Build MANA as described in the architecture documents at `../research/reasoningbank/`. The three goals in priority order:
+Build MANA as described in the architecture documents at `../research/reasoningbank/`. The four goals in priority order:
 
 1. **Get the application working** - Integrated with Claude Code via pre-hooks
 2. **Improve accuracy** - Better context suggestions over time
 3. **Improve speed** - Sub-millisecond context injection
+4. **Extend capabilities** - Multi-workspace sync, team sharing, and advanced features
+
+---
+
+## Goal 4: Extension Roadmap
+
+Once goals 1-3 are stable, extend MANA with these capabilities:
+
+### 4.1 Multi-Workspace Synchronization
+
+Enable pattern sharing across devpods, workspaces, and machines:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  Federated MANA Architecture                     │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                      │
+│  │ Devpod A │  │ Devpod B │  │ Devpod C │                      │
+│  │  Local   │  │  Local   │  │  Local   │                      │
+│  │  MANA    │  │  MANA    │  │  MANA    │                      │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘                      │
+│       │             │             │                             │
+│       └──────┬──────┴─────────────┘                             │
+│              │ Encrypted Sync                                   │
+│              ▼                                                  │
+│  ┌─────────────────────────────────────┐                       │
+│  │       Central Pattern Hub           │                       │
+│  │  - S3/Git/Supabase backend         │                       │
+│  │  - Conflict resolution             │                       │
+│  │  - Access control                  │                       │
+│  └─────────────────────────────────────┘                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Implementation priority:**
+1. `mana export --encrypted` / `mana import --merge` commands
+2. Git-based sync (simplest, works offline)
+3. S3/object storage sync (scalable)
+4. Supabase/PostgreSQL (team features, real-time)
+
+### 4.2 Security Requirements
+
+All sync features MUST implement:
+
+```rust
+// Pattern sanitization before export
+fn sanitize_pattern(p: &Pattern) -> Pattern {
+    // 1. Strip absolute paths → relative
+    // 2. Redact secrets/tokens (regex detection)
+    // 3. Hash sensitive identifiers
+    // 4. Generalize user-specific context
+}
+
+// Transport security
+// - TLS 1.3 for network communication
+// - AES-256-GCM end-to-end encryption
+// - Per-workspace encryption keys
+// - Argon2 key derivation from passphrase
+```
+
+### 4.3 New CLI Commands
+
+```bash
+# Sync management
+mana sync init --backend <s3|git|supabase>
+mana sync push                    # Upload local patterns (encrypted)
+mana sync pull                    # Download and merge remote
+mana sync status                  # Show sync state
+mana sync set-key                 # Configure encryption passphrase
+
+# Team features (requires Supabase backend)
+mana team create <name>           # Create a team
+mana team invite <email>          # Invite team member
+mana team share <pattern-id>      # Share pattern with team
+mana team list                    # List team patterns
+```
+
+### 4.4 Configuration
+
+```toml
+# ~/.mana/sync.toml
+[sync]
+enabled = true
+backend = "s3"              # s3 | git | supabase
+interval_minutes = 60
+
+[sync.s3]
+bucket = "org-mana-patterns"
+prefix = "patterns"
+region = "us-west-2"
+
+[sync.git]
+remote = "git@github.com:org/mana-patterns.git"
+branch = "main"
+
+[sync.supabase]
+url = "https://xyz.supabase.co"
+# Key from MANA_SUPABASE_KEY env var
+
+[sync.security]
+sanitize_paths = true
+redact_secrets = true
+# Passphrase from MANA_SYNC_KEY env var
+
+[sync.sharing]
+visibility = "team"         # private | team | public
+team_id = "uuid"
+```
+
+### 4.5 Advanced Features (Future)
+
+- **Pattern marketplace**: Curated public patterns for common tasks
+- **Smart merging**: ML-based conflict resolution
+- **Usage analytics**: Track which patterns help most across team
+- **Auto-pruning**: Remove patterns that don't help team performance
+- **Embedding sync**: Share vector indices for faster startup
+- **Real-time collaboration**: Live pattern suggestions from team activity
+
+### 4.6 Implementation Checklist
+
+- [ ] Add `src/sync/mod.rs` module
+- [ ] Implement pattern sanitization
+- [ ] Add AES-256-GCM encryption
+- [ ] Create export/import commands
+- [ ] Implement git backend
+- [ ] Implement S3 backend
+- [ ] Add sync to daemon loop
+- [ ] Create team management (Supabase)
+- [ ] Add row-level security policies
+- [ ] Write integration tests
+- [ ] Document sync setup
 
 ---
 
@@ -49,7 +180,9 @@ If there are new comments with instructions or guidance, incorporate them into y
 
 ### Step 3: Determine Highest Priority Task
 
-Based on the three goals and current state, select ONE task:
+Based on the four goals and current state, select ONE task:
+
+**Goal 1: Get it working**
 
 **If no Rust project exists:**
 - Initialize Cargo project with proper structure
@@ -63,11 +196,35 @@ Based on the three goals and current state, select ONE task:
 **If binary exists but doesn't integrate with Claude Code:**
 - Create hook configuration and test integration
 
+**Goal 2: Improve accuracy**
+
 **If integration works but accuracy is low:**
 - Implement/improve learning algorithms
+- Add better pattern extraction from trajectories
+- Improve similarity matching
+
+**Goal 3: Improve speed**
 
 **If accuracy is acceptable but speed is slow:**
 - Optimize hot paths, add SIMD, improve indexing
+- Profile and optimize injection latency
+- Add caching layers
+
+**Goal 4: Extend capabilities (only after Goals 1-3 are stable)**
+
+**If speed targets met and system is stable:**
+- Implement `mana export --encrypted` / `mana import --merge`
+- Add pattern sanitization (strip paths, redact secrets)
+- Implement git-based sync backend
+- Add S3 sync backend
+- Create team features with Supabase
+- See "Goal 4: Extension Roadmap" section for full checklist
+
+**Stability criteria for Goal 4:**
+- Injection latency consistently <10ms
+- Pattern accuracy >70% (measured by success rate)
+- No crashes or data corruption in 48+ hours
+- Daemon mode running reliably
 
 ### Step 4: Execute the Task
 
