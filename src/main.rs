@@ -3,6 +3,10 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+// Type aliases for complex types (clippy::type_complexity)
+type VerdictRow = (String, Option<i64>, String, f64, Option<String>, String);
+type PatternRow = (String, String, i64, i64, Option<Vec<u8>>);
+
 mod bench;
 mod embeddings;
 mod hooks;
@@ -638,7 +642,7 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                          LIMIT ?1"
                     )?;
 
-                    let verdicts: Vec<(String, Option<i64>, String, f64, Option<String>, String)> = stmt
+                    let verdicts: Vec<VerdictRow> = stmt
                         .query_map([limit as i64], |row| {
                             Ok((
                                 row.get(0)?,
@@ -849,7 +853,7 @@ async fn run_async_main(cli: Cli) -> Result<()> {
 
                             sync::init_p2p_sync(&mana_dir, discovery, port, static_peers)?;
                         }
-                        "git" | _ => {
+                        _ => {
                             // Save config first
                             sync::save_git_config(&mana_dir, &remote, &branch)?;
                             // Then initialize the repository
@@ -1247,7 +1251,7 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                 PatternsAction::Show { pattern_id } => {
                     let conn = rusqlite::Connection::open(&db_path)?;
 
-                    let result: Option<(String, String, i64, i64, Option<Vec<u8>>)> = conn
+                    let result: Option<PatternRow> = conn
                         .query_row(
                             "SELECT tool_type, context_query, success_count, failure_count, embedding
                              FROM patterns WHERE id = ?1",
