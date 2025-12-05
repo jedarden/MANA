@@ -130,6 +130,7 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         "task" => vec!["Task"],
         "read" => vec!["Read", "Glob", "Grep"],
         "grep" => vec!["Grep", "Read", "Glob"],
+        "web" => vec!["WebSearch", "WebFetch"],
         _ => vec![tool],
     };
 
@@ -171,10 +172,10 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
                 let similarity = calculate_similarity(query, &p.context_query);
                 // Combine similarity with success score for final ranking
                 let success_score = (p.success_count - p.failure_count) as f64;
-                let combined_score = similarity * 0.7 + (success_score.max(0.0) / 10.0) * 0.3;
+                let combined_score = similarity * 0.6 + (success_score.max(0.0) / 10.0) * 0.4;
                 (p, combined_score)
             })
-            .filter(|(_, score)| *score > 0.1)  // Minimum similarity threshold
+            .filter(|(_, score)| *score > 0.02)  // Lower threshold - let success score contribute more
             .collect();
 
         // Sort by combined score (descending)
@@ -184,6 +185,20 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         debug!("Ranked {} patterns by similarity", scored_patterns.len());
         patterns = scored_patterns.into_iter().map(|(p, _)| p).collect();
     } else {
+        patterns.truncate(MAX_PATTERNS);
+    }
+
+    // If still no patterns after similarity filtering, fall back to top patterns by score
+    if patterns.is_empty() {
+        debug!("Similarity filtering returned 0, falling back to score-based selection");
+        let store = PatternStore::open(&db_path)?;
+        for tool_type in &primary_types {
+            let mut type_patterns = store.get_by_tool(tool_type, MAX_PATTERNS)?;
+            patterns.append(&mut type_patterns);
+        }
+        patterns.sort_by(|a, b| {
+            (b.success_count - b.failure_count).cmp(&(a.success_count - a.failure_count))
+        });
         patterns.truncate(MAX_PATTERNS);
     }
 
@@ -266,7 +281,11 @@ fn format_failure_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
 /// Extract a concise insight from the context query
 fn extract_insight(context_query: &str) -> String {
     let lines: Vec<&str> = context_query.lines().collect();
-    let mut insights = Vec::new();
+
+    // Extract Task context for relevance
+    let mut task_hint = String::new();
+    let mut approach_detail = String::new();
+    let mut pitfall_msg = String::new();
 
     for line in &lines {
         let trimmed = line.trim();
@@ -274,31 +293,43 @@ fn extract_insight(context_query: &str) -> String {
         // Extract Pitfall content (key for failures)
         if trimmed.starts_with("Pitfall:") {
             let content = trimmed.trim_start_matches("Pitfall:").trim();
-            if !content.is_empty() && content.len() > 5 {
-                insights.push(format!("Watch out: {}", truncate_str(content, 80)));
+            if !content.is_empty() && content.len() > 10 {
+                pitfall_msg = format!("⚠️ {}", truncate_str(content, 100));
             }
         }
-        // Extract Approach content
+        // Extract Task context (short)
+        else if trimmed.starts_with("Task:") {
+            let content = trimmed.trim_start_matches("Task:").trim();
+            // Get just the action type from task
+            task_hint = extract_action_type(content);
+        }
+        // Extract Approach content - the specific action
         else if trimmed.starts_with("Approach:") {
             let content = trimmed.trim_start_matches("Approach:").trim();
             if !content.is_empty() && content.len() > 5 {
-                insights.push(truncate_str(content, 100).to_string());
-            }
-        }
-        // Extract tool context (e.g., "Edit - editing file.rs")
-        else if trimmed.contains(" - ") && !trimmed.starts_with("Task:") {
-            let parts: Vec<&str> = trimmed.splitn(2, " - ").collect();
-            if parts.len() == 2 {
-                insights.push(truncate_str(parts[1], 80).to_string());
+                // Extract the specific action after the tool name
+                approach_detail = extract_approach_action(content);
             }
         }
     }
 
-    if !insights.is_empty() {
-        return insights.join(" | ");
+    // Build contextual insight
+    if !pitfall_msg.is_empty() {
+        return pitfall_msg;
     }
 
-    // Fall back: get the second line if available (skip Task: line)
+    if !approach_detail.is_empty() {
+        if !task_hint.is_empty() {
+            return format!("For {}: {}", task_hint, approach_detail);
+        }
+        return approach_detail;
+    }
+
+    if !task_hint.is_empty() {
+        return format!("Pattern for: {}", task_hint);
+    }
+
+    // Fallback: use first non-empty meaningful line
     for line in &lines {
         let trimmed = line.trim();
         if !trimmed.is_empty()
@@ -306,7 +337,8 @@ fn extract_insight(context_query: &str) -> String {
             && !trimmed.starts_with("Outcome:")
             && !trimmed.starts_with("User asked:")
             && !trimmed.starts_with("Query:")
-            && trimmed.len() > 5
+            && !trimmed.starts_with("Approach:")
+            && trimmed.len() > 10
         {
             return truncate_str(trimmed, 100).to_string();
         }
@@ -314,6 +346,44 @@ fn extract_insight(context_query: &str) -> String {
 
     // Last resort
     truncate_str(context_query.lines().next().unwrap_or(context_query), 80).to_string()
+}
+
+/// Extract the action type from a task description
+fn extract_action_type(task: &str) -> String {
+    // Common action verbs to identify
+    let actions = ["Research", "Create", "Build", "Fix", "Add", "Update",
+                   "Implement", "Analyze", "Configure", "Setup", "Test"];
+
+    let lower = task.to_lowercase();
+
+    for action in &actions {
+        if lower.contains(&action.to_lowercase()) {
+            // Return a short contextual hint
+            let words: Vec<&str> = task.split_whitespace().take(4).collect();
+            return words.join(" ");
+        }
+    }
+
+    // Default: first few words
+    let words: Vec<&str> = task.split_whitespace().take(3).collect();
+    words.join(" ")
+}
+
+/// Extract the specific action from approach string like "Bash - npm - Initialize..."
+fn extract_approach_action(approach: &str) -> String {
+    // Pattern: "ToolName - action - description"
+    let parts: Vec<&str> = approach.splitn(3, " - ").collect();
+
+    if parts.len() >= 3 {
+        // Use the description part
+        return truncate_str(parts[2], 80).to_string();
+    } else if parts.len() == 2 {
+        // Use second part
+        return truncate_str(parts[1], 80).to_string();
+    }
+
+    // Just use the whole thing
+    truncate_str(approach, 80).to_string()
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {
@@ -381,6 +451,15 @@ fn build_query(tool: &str, input: &ToolInput) -> String {
             input.subagent_type.as_deref().unwrap_or("unknown"),
             input.description.as_deref().unwrap_or("")
         ),
+        "read" => {
+            let path = input.file_path.as_deref().unwrap_or("");
+            let filename = extract_filename(path);
+            format!("Reading {}", filename)
+        },
+        "web" => {
+            // For web tools, build query from the input
+            format!("Web search")
+        },
         _ => format!("Tool: {}", tool),
     }
 }
