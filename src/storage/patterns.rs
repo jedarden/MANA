@@ -64,14 +64,20 @@ impl PatternStore {
     pub fn insert(&self, pattern: &Pattern) -> Result<i64> {
         use crate::storage::calculate_similarity;
 
-        // Check for existing similar patterns of the same tool type
-        let existing = self.get_by_tool(&pattern.tool_type, 20)?;
+        // Check for existing similar patterns of the same tool type AND command category
+        // This ensures Rust patterns don't get merged with Python patterns
+        let existing = if pattern.command_category.is_some() {
+            self.get_by_tool_and_category(&pattern.tool_type, pattern.command_category.as_deref(), 20)?
+        } else {
+            self.get_by_tool(&pattern.tool_type, 20)?
+        };
 
         for existing_pattern in existing {
             let similarity = calculate_similarity(&pattern.context_query, &existing_pattern.context_query);
 
-            // If very similar (>85%), update existing instead of creating new
-            if similarity > 0.85 {
+            // If very similar (>70%), update existing instead of creating new
+            // Now that we filter by command_category, this only merges within the same tech stack
+            if similarity > 0.70 {
                 debug!("Merging similar pattern {} (similarity: {:.2})", existing_pattern.id, similarity);
 
                 // Increment success/failure counts on existing pattern

@@ -68,6 +68,7 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
     for trajectory in all_trajectories.iter().take(100) {  // Process more trajectories
         // Extract patterns from individual successful tool calls
         let patterns = extract_per_tool_patterns(trajectory);
+
         for pattern in &patterns {
             match store.insert(pattern) {
                 Ok(_) => {
@@ -133,8 +134,9 @@ fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     // Extract task category for context
     let task_category = extract_task_category(&trajectory.user_query);
 
-    // Create patterns for each tool call that didn't result in an error
-    for tool_call in trajectory.tool_calls.iter().take(MAX_PATTERNS_PER_TRAJECTORY * 2) {
+    // Create patterns for each tool call (not limited - we deduplicate later)
+    // Don't limit here because Edit calls often come after initial Bash commands
+    for tool_call in trajectory.tool_calls.iter() {
         // For tools that produce patterns we care about
         match tool_call.tool_name.as_str() {
             "Edit" | "Write" | "MultiEdit" | "Bash" | "Task" | "Read" | "Grep" | "Glob" => {
