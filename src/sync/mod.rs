@@ -12,10 +12,17 @@ pub mod export;
 pub mod crypto;
 pub mod git_backend;
 pub mod s3_backend;
+pub mod supabase_backend;
 
-pub use export::{export_patterns, import_patterns};
+pub use export::{export_patterns, import_patterns, export_patterns_to_vec, import_patterns_from_vec};
 pub use git_backend::{init_git_sync, push_patterns, pull_patterns, sync_status, save_git_config};
 pub use s3_backend::{init_s3_sync, push_patterns_s3, pull_patterns_s3, s3_status, save_s3_config, is_s3_available};
+pub use supabase_backend::{
+    init_supabase_sync, push_patterns_supabase, pull_patterns_supabase,
+    supabase_status, save_supabase_config, is_supabase_available, get_schema_sql,
+    create_team, list_teams, invite_to_team, join_team, share_pattern,
+    Team, TeamMember, SupabaseStatus, PullResult,
+};
 
 /// Configuration for sync operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +104,16 @@ pub enum Visibility {
     Private,
     Team,
     Public,
+}
+
+impl std::fmt::Display for Visibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Visibility::Private => write!(f, "private"),
+            Visibility::Team => write!(f, "team"),
+            Visibility::Public => write!(f, "public"),
+        }
+    }
 }
 
 /// Exportable pattern format (sanitized for sharing)

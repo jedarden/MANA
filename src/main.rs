@@ -113,13 +113,19 @@ enum Commands {
         #[command(subcommand)]
         action: SyncAction,
     },
+
+    /// Team management commands
+    Team {
+        #[command(subcommand)]
+        action: TeamAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum SyncAction {
     /// Initialize sync with a git repository
     Init {
-        /// Backend type: git (default) or s3
+        /// Backend type: git (default), s3, or supabase
         #[arg(long, default_value = "git")]
         backend: String,
         /// Git remote URL (for git backend, leave empty for local-only init)
@@ -137,6 +143,9 @@ enum SyncAction {
         /// AWS region (for s3 backend)
         #[arg(long, default_value = "us-east-1")]
         region: String,
+        /// Supabase project URL (for supabase backend)
+        #[arg(long, default_value = "")]
+        url: String,
     },
 
     /// Push patterns to the remote repository
@@ -164,6 +173,46 @@ enum SyncAction {
 
     /// Set the encryption passphrase
     SetKey,
+}
+
+#[derive(Subcommand)]
+enum TeamAction {
+    /// Create a new team
+    Create {
+        /// Team name
+        name: String,
+    },
+
+    /// List teams you belong to
+    List,
+
+    /// Invite a user to your team
+    Invite {
+        /// Team ID
+        #[arg(long)]
+        team: String,
+        /// Email of the user to invite
+        email: String,
+    },
+
+    /// Join a team using an invite code
+    Join {
+        /// Invite code
+        code: String,
+    },
+
+    /// Share a pattern with your team
+    Share {
+        /// Pattern hash to share
+        #[arg(long)]
+        pattern: String,
+        /// Team ID to share with
+        #[arg(long)]
+        team: String,
+    },
+
+    /// Print the SQL schema for Supabase tables
+    SetupSchema,
 }
 
 #[tokio::main]
@@ -282,7 +331,7 @@ async fn main() -> Result<()> {
             let db_path = mana_dir.join("metadata.sqlite");
 
             match action {
-                SyncAction::Init { backend, remote, branch, bucket, prefix, region } => {
+                SyncAction::Init { backend, remote, branch, bucket, prefix, region, url } => {
                     match backend.to_lowercase().as_str() {
                         "s3" => {
                             if bucket.is_empty() {
@@ -295,6 +344,17 @@ async fn main() -> Result<()> {
                             }
                             sync::save_s3_config(&mana_dir, &bucket, &prefix, &region)?;
                             sync::init_s3_sync(&mana_dir, &bucket, &prefix, &region).await?;
+                        }
+                        "supabase" => {
+                            if url.is_empty() {
+                                return Err(anyhow::anyhow!("Supabase URL is required. Use --url <project-url>"));
+                            }
+                            if !sync::is_supabase_available() {
+                                return Err(anyhow::anyhow!(
+                                    "Supabase sync not available. Rebuild MANA with: cargo build --release --features supabase"
+                                ));
+                            }
+                            sync::init_supabase_sync(&mana_dir, &url).await?;
                         }
                         "git" | _ => {
                             // Save config first
@@ -335,7 +395,18 @@ async fn main() -> Result<()> {
                             )?;
                         }
                         sync::SyncBackend::Supabase { .. } => {
-                            return Err(anyhow::anyhow!("Supabase sync not yet implemented"));
+                            if !sync::is_supabase_available() {
+                                return Err(anyhow::anyhow!(
+                                    "Supabase sync not available. Rebuild MANA with: cargo build --release --features supabase"
+                                ));
+                            }
+                            let count = sync::push_patterns_supabase(
+                                &mana_dir,
+                                &db_path,
+                                &security,
+                                &config.security.visibility.to_string(),
+                            ).await?;
+                            println!("✅ Pushed {} patterns to Supabase", count);
                         }
                     }
                 }
@@ -368,7 +439,24 @@ async fn main() -> Result<()> {
                             )?;
                         }
                         sync::SyncBackend::Supabase { .. } => {
-                            return Err(anyhow::anyhow!("Supabase sync not yet implemented"));
+                            if !sync::is_supabase_available() {
+                                return Err(anyhow::anyhow!(
+                                    "Supabase sync not available. Rebuild MANA with: cargo build --release --features supabase"
+                                ));
+                            }
+                            let result = sync::pull_patterns_supabase(
+                                &mana_dir,
+                                &db_path,
+                                merge_strategy,
+                                true,   // include team patterns
+                                false,  // don't include public by default
+                            ).await?;
+                            println!("✅ Pulled patterns from Supabase");
+                            println!("   Total: {}, New: {}, Merged: {}",
+                                result.total, result.imported, result.merged);
+                            if result.skipped > 0 {
+                                println!("   Skipped: {}", result.skipped);
+                            }
                         }
                     }
                 }
@@ -424,7 +512,21 @@ async fn main() -> Result<()> {
                         sync::SyncBackend::Supabase { url } => {
                             println!("Backend: supabase");
                             println!("URL: {}", url);
-                            println!("Status: ⚠️  Not yet implemented");
+                            if sync::is_supabase_available() {
+                                let status = sync::supabase_status(&mana_dir).await?;
+                                if status.connected {
+                                    println!("Connected: ✅");
+                                    if let Some(count) = status.pattern_count {
+                                        println!("Remote patterns: {}", count);
+                                    }
+                                } else {
+                                    println!("Connected: ❌");
+                                    println!("Check MANA_SUPABASE_KEY environment variable");
+                                }
+                            } else {
+                                println!("Status: ⚠️  Feature not compiled");
+                                println!("Rebuild with: cargo build --release --features supabase");
+                            }
                         }
                     }
                 }
@@ -440,6 +542,78 @@ async fn main() -> Result<()> {
                     println!();
                     println!("   💡 Tip: Use a strong passphrase (32+ characters)");
                     println!("   Generate one: openssl rand -base64 32");
+                }
+            }
+        }
+        Commands::Team { action } => {
+            let mana_dir = get_mana_dir()?;
+
+            match action {
+                TeamAction::Create { name } => {
+                    if !sync::is_supabase_available() {
+                        return Err(anyhow::anyhow!(
+                            "Team features require Supabase. Rebuild MANA with: cargo build --release --features supabase"
+                        ));
+                    }
+                    let team = sync::create_team(&mana_dir, &name).await?;
+                    println!("✅ Team '{}' created", team.name);
+                    println!("   ID: {}", team.id);
+                    println!();
+                    println!("   To invite members:");
+                    println!("   mana team invite --team {} <email>", team.id);
+                }
+                TeamAction::List => {
+                    if !sync::is_supabase_available() {
+                        return Err(anyhow::anyhow!(
+                            "Team features require Supabase. Rebuild MANA with: cargo build --release --features supabase"
+                        ));
+                    }
+                    let teams = sync::list_teams(&mana_dir).await?;
+                    if teams.is_empty() {
+                        println!("You are not a member of any teams.");
+                        println!();
+                        println!("Create a team with: mana team create <name>");
+                        println!("Join a team with: mana team join <invite-code>");
+                    } else {
+                        println!("Your Teams");
+                        println!("==========");
+                        println!();
+                        for team in teams {
+                            println!("📁 {} ({})", team.name, team.id);
+                        }
+                    }
+                }
+                TeamAction::Invite { team, email } => {
+                    if !sync::is_supabase_available() {
+                        return Err(anyhow::anyhow!(
+                            "Team features require Supabase. Rebuild MANA with: cargo build --release --features supabase"
+                        ));
+                    }
+                    sync::invite_to_team(&mana_dir, &team, &email).await?;
+                }
+                TeamAction::Join { code } => {
+                    if !sync::is_supabase_available() {
+                        return Err(anyhow::anyhow!(
+                            "Team features require Supabase. Rebuild MANA with: cargo build --release --features supabase"
+                        ));
+                    }
+                    sync::join_team(&mana_dir, &code).await?;
+                }
+                TeamAction::Share { pattern, team } => {
+                    if !sync::is_supabase_available() {
+                        return Err(anyhow::anyhow!(
+                            "Team features require Supabase. Rebuild MANA with: cargo build --release --features supabase"
+                        ));
+                    }
+                    sync::share_pattern(&mana_dir, &pattern, &team).await?;
+                }
+                TeamAction::SetupSchema => {
+                    println!("Supabase Schema for MANA Team Features");
+                    println!("======================================");
+                    println!();
+                    println!("Run this SQL in your Supabase SQL editor:");
+                    println!();
+                    println!("{}", sync::get_schema_sql());
                 }
             }
         }

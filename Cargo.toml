@@ -53,9 +53,14 @@ rand = "0.8"
 aws-config = { version = "1.5", optional = true }
 aws-sdk-s3 = { version = "1.56", optional = true }
 
+# Supabase/PostgreSQL backend (optional, compile with --features supabase)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
+
 [features]
 default = []
 s3 = ["aws-config", "aws-sdk-s3"]
+supabase = ["reqwest", "uuid"]
 
 [dev-dependencies]
 tempfile = "3"

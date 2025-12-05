@@ -214,6 +214,99 @@ pub struct ImportResult {
     pub source_workspace: String,
 }
 
+/// Export patterns to a vector (for API-based backends like Supabase)
+pub fn export_patterns_to_vec(
+    db_path: &Path,
+    security: &SecurityConfig,
+) -> Result<Vec<ExportablePattern>> {
+    let store = PatternStore::open_readonly(db_path)?;
+    let patterns = get_all_patterns(&store)?;
+
+    let sanitized: Vec<ExportablePattern> = patterns
+        .iter()
+        .map(|p| {
+            if security.sanitize_paths || security.redact_secrets {
+                sanitize_pattern(p)
+            } else {
+                ExportablePattern {
+                    pattern_hash: p.pattern_hash.clone(),
+                    tool_type: p.tool_type.clone(),
+                    command_category: p.command_category.clone(),
+                    context_query: p.context_query.clone(),
+                    success_count: p.success_count,
+                    failure_count: p.failure_count,
+                }
+            }
+        })
+        .collect();
+
+    Ok(sanitized)
+}
+
+/// Import patterns from a vector (for API-based backends like Supabase)
+pub fn import_patterns_from_vec(
+    db_path: &Path,
+    patterns: Vec<ExportablePattern>,
+    merge_strategy: MergeStrategy,
+) -> Result<ImportResult> {
+    let store = PatternStore::open(db_path)?;
+
+    let mut imported = 0;
+    let mut merged = 0;
+    let mut skipped = 0;
+
+    for exportable in &patterns {
+        let pattern = Pattern {
+            id: 0,
+            pattern_hash: exportable.pattern_hash.clone(),
+            tool_type: exportable.tool_type.clone(),
+            command_category: exportable.command_category.clone(),
+            context_query: exportable.context_query.clone(),
+            success_count: exportable.success_count,
+            failure_count: exportable.failure_count,
+            embedding_id: None,
+        };
+
+        match merge_strategy {
+            MergeStrategy::Add => {
+                let id = store.insert_fast(&pattern)?;
+                if id > 0 {
+                    imported += 1;
+                } else {
+                    merged += 1;
+                }
+            }
+            MergeStrategy::Replace => {
+                store.insert_fast(&pattern)?;
+                imported += 1;
+            }
+            MergeStrategy::KeepBest => {
+                if let Some(existing) = find_by_hash(&store, &pattern.pattern_hash)? {
+                    let existing_rate = success_rate(&existing);
+                    let new_rate = success_rate(&pattern);
+                    if new_rate > existing_rate {
+                        store.insert_fast(&pattern)?;
+                        imported += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                } else {
+                    store.insert_fast(&pattern)?;
+                    imported += 1;
+                }
+            }
+        }
+    }
+
+    Ok(ImportResult {
+        total: patterns.len(),
+        imported,
+        merged,
+        skipped,
+        source_workspace: "api".to_string(),
+    })
+}
+
 /// Get all patterns from database
 fn get_all_patterns(store: &PatternStore) -> Result<Vec<Pattern>> {
     // Get patterns of all known types
