@@ -44,14 +44,16 @@ impl PatternStore {
         let conn = Connection::open_with_flags(
             db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
 
-        // Use memory-mapped I/O for faster reads (8MB mmap region)
-        conn.pragma_update(None, "mmap_size", 8_388_608)?;
+        // Minimal pragmas for fastest startup
+        // mmap_size: 4MB is enough for typical pattern DBs, reduces initialization time
+        conn.pragma_update(None, "mmap_size", 4_194_304)?;
+        // Reduce cache size for faster startup (patterns are small)
+        conn.pragma_update(None, "cache_size", -512)?; // 512KB
         // Keep prepared statements cached
-        conn.set_prepared_statement_cache_capacity(16);
+        conn.set_prepared_statement_cache_capacity(8);
 
         Ok(Self { conn })
     }

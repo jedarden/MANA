@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufRead, Write};
+use std::io::{self, Read as IoRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, warn};
@@ -73,20 +73,11 @@ pub fn inject_context(tool: &str) -> Result<()> {
     let start = Instant::now();
     debug!("Injecting context for tool: {}", tool);
 
-    // Read input from stdin - collect lines until EOF or error
-    // Using take_while to avoid potential infinite loop on persistent read errors
+    // Read input from stdin - read all bytes at once for speed
+    // Typical input is <1KB, so reading everything is fast
     let stdin = io::stdin();
-    let mut lines = Vec::new();
-    for line_result in stdin.lock().lines() {
-        match line_result {
-            Ok(line) => lines.push(line),
-            Err(e) => {
-                warn!("Error reading stdin: {}", e);
-                break;
-            }
-        }
-    }
-    let input: String = lines.join("\n");
+    let mut input = String::with_capacity(1024);
+    stdin.lock().read_to_string(&mut input)?;
     let stdin_time = start.elapsed().as_micros();
 
     if input.is_empty() {

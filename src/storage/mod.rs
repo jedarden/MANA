@@ -81,6 +81,9 @@ pub async fn init() -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_patterns_hash ON patterns(pattern_hash);
         CREATE INDEX IF NOT EXISTS idx_causal_pattern_a ON causal_edges(pattern_a_id);
         CREATE INDEX IF NOT EXISTS idx_causal_pattern_b ON causal_edges(pattern_b_id);
+
+        -- Composite index for the hot query path (tool_type + score ordering)
+        CREATE INDEX IF NOT EXISTS idx_patterns_tool_score ON patterns(tool_type, (success_count - failure_count) DESC);
         "#,
     )?;
 
