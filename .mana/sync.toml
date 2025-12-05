@@ -3,7 +3,7 @@ interval_minutes = 60
 
 [backend]
 type = "Git"
-remote = ""
+remote = "/tmp/.tmpx56oZL/test-sync-repo"
 branch = "main"
 
 [security]

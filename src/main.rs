@@ -125,7 +125,7 @@ enum Commands {
 enum SyncAction {
     /// Initialize sync with a git repository
     Init {
-        /// Backend type: git (default), s3, or supabase
+        /// Backend type: git (default), s3, supabase, or p2p
         #[arg(long, default_value = "git")]
         backend: String,
         /// Git remote URL (for git backend, leave empty for local-only init)
@@ -146,6 +146,15 @@ enum SyncAction {
         /// Supabase project URL (for supabase backend)
         #[arg(long, default_value = "")]
         url: String,
+        /// Discovery method for P2P: static (default), mdns, dht
+        #[arg(long, default_value = "static")]
+        discover: String,
+        /// Listen port for P2P sync
+        #[arg(long, default_value = "4222")]
+        port: u16,
+        /// Static peers for P2P (comma-separated, e.g., "192.168.1.10:4222,192.168.1.11:4222")
+        #[arg(long, default_value = "")]
+        peers: String,
     },
 
     /// Push patterns to the remote repository
@@ -173,6 +182,36 @@ enum SyncAction {
 
     /// Set the encryption passphrase
     SetKey,
+
+    /// Manage P2P peers
+    Peer {
+        #[command(subcommand)]
+        action: PeerAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PeerAction {
+    /// Add a peer to the P2P network
+    Add {
+        /// Peer address (e.g., "192.168.1.10:4222")
+        address: String,
+    },
+
+    /// Remove a peer from the P2P network
+    Remove {
+        /// Peer address to remove
+        address: String,
+    },
+
+    /// List all configured peers
+    List,
+
+    /// Sync with a specific peer
+    SyncWith {
+        /// Peer address to sync with
+        address: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -331,7 +370,7 @@ async fn main() -> Result<()> {
             let db_path = mana_dir.join("metadata.sqlite");
 
             match action {
-                SyncAction::Init { backend, remote, branch, bucket, prefix, region, url } => {
+                SyncAction::Init { backend, remote, branch, bucket, prefix, region, url, discover, port, peers } => {
                     match backend.to_lowercase().as_str() {
                         "s3" => {
                             if bucket.is_empty() {
@@ -355,6 +394,23 @@ async fn main() -> Result<()> {
                                 ));
                             }
                             sync::init_supabase_sync(&mana_dir, &url).await?;
+                        }
+                        "p2p" => {
+                            // Parse discovery method
+                            let discovery = match discover.to_lowercase().as_str() {
+                                "mdns" => sync::DiscoveryMethod::MDNS,
+                                "dht" => sync::DiscoveryMethod::DHT,
+                                _ => sync::DiscoveryMethod::Static,
+                            };
+
+                            // Parse static peers
+                            let static_peers: Vec<String> = if peers.is_empty() {
+                                Vec::new()
+                            } else {
+                                peers.split(',').map(|s| s.trim().to_string()).collect()
+                            };
+
+                            sync::init_p2p_sync(&mana_dir, discovery, port, static_peers)?;
                         }
                         "git" | _ => {
                             // Save config first
@@ -408,6 +464,13 @@ async fn main() -> Result<()> {
                             ).await?;
                             println!("✅ Pushed {} patterns to Supabase", count);
                         }
+                        sync::SyncBackend::P2P { .. } => {
+                            // P2P push = sync with all peers
+                            let results = sync::sync_with_all_peers(&mana_dir, &db_path, &security)?;
+                            let total_new: usize = results.iter().map(|r| r.new_patterns).sum();
+                            let successful = results.iter().filter(|r| r.success).count();
+                            println!("✅ P2P sync complete: {} peers, +{} patterns", successful, total_new);
+                        }
                     }
                 }
                 SyncAction::Pull { passphrase, merge } => {
@@ -457,6 +520,14 @@ async fn main() -> Result<()> {
                             if result.skipped > 0 {
                                 println!("   Skipped: {}", result.skipped);
                             }
+                        }
+                        sync::SyncBackend::P2P { .. } => {
+                            // P2P pull = sync with all peers
+                            let security = sync::SecurityConfig::default();
+                            let results = sync::sync_with_all_peers(&mana_dir, &db_path, &security)?;
+                            let total_new: usize = results.iter().map(|r| r.new_patterns).sum();
+                            let successful = results.iter().filter(|r| r.success).count();
+                            println!("✅ P2P sync complete: {} peers, +{} patterns", successful, total_new);
                         }
                     }
                 }
@@ -528,6 +599,24 @@ async fn main() -> Result<()> {
                                 println!("Rebuild with: cargo build --release --features supabase");
                             }
                         }
+                        sync::SyncBackend::P2P { discovery, listen_port, peers } => {
+                            let status = sync::p2p_status(&mana_dir)?;
+                            println!("Backend: p2p");
+                            println!("Discovery: {}", discovery);
+                            println!("Listen port: {}", listen_port);
+                            println!("Node ID: {}", status.node_id);
+                            println!("CRDT entries: {}", status.entry_count);
+                            println!();
+                            println!("Configured peers: {}", peers.len());
+                            for peer in peers {
+                                println!("  - {}", peer);
+                            }
+                            if peers.is_empty() {
+                                println!("   (none configured)");
+                                println!();
+                                println!("   Add peers with: mana sync peer add <address>");
+                            }
+                        }
                     }
                 }
                 SyncAction::SetKey => {
@@ -542,6 +631,43 @@ async fn main() -> Result<()> {
                     println!();
                     println!("   💡 Tip: Use a strong passphrase (32+ characters)");
                     println!("   Generate one: openssl rand -base64 32");
+                }
+                SyncAction::Peer { action } => {
+                    match action {
+                        PeerAction::Add { address } => {
+                            sync::add_peer(&mana_dir, &address)?;
+                        }
+                        PeerAction::Remove { address } => {
+                            sync::remove_peer(&mana_dir, &address)?;
+                        }
+                        PeerAction::List => {
+                            let peers = sync::list_peers(&mana_dir)?;
+                            println!("P2P Peers");
+                            println!("=========");
+                            println!();
+                            if peers.is_empty() {
+                                println!("No peers configured.");
+                                println!();
+                                println!("Add a peer with: mana sync peer add <address>");
+                            } else {
+                                for peer in peers {
+                                    let status = if peer.online { "🟢" } else { "⚪" };
+                                    println!("{} {} ({})", status, peer.address, peer.node_id);
+                                }
+                            }
+                        }
+                        PeerAction::SyncWith { address } => {
+                            let security = sync::SecurityConfig::default();
+                            let result = sync::sync_with_peer(&mana_dir, &db_path, &address, &security, 30)?;
+                            if result.success {
+                                println!("✅ Synced with {}", address);
+                                println!("   Received: {}, Merged: {}, New: {}",
+                                    result.received, result.merged, result.new_patterns);
+                            } else {
+                                println!("❌ Sync with {} failed", address);
+                            }
+                        }
+                    }
                 }
             }
         }

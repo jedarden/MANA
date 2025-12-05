@@ -246,6 +246,7 @@ pub fn sync_status(mana_dir: &Path) -> Result<SyncStatus> {
                 SyncBackend::S3 { .. } => "s3".to_string(),
                 SyncBackend::Supabase { .. } => "supabase".to_string(),
                 SyncBackend::Git { .. } => "git".to_string(),
+                SyncBackend::P2P { .. } => "p2p".to_string(),
             },
             repo_initialized: false,
             remote: None,

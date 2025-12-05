@@ -13,6 +13,7 @@ pub mod crypto;
 pub mod git_backend;
 pub mod s3_backend;
 pub mod supabase_backend;
+pub mod p2p_backend;
 
 pub use export::{export_patterns, import_patterns, export_patterns_to_vec, import_patterns_from_vec};
 pub use git_backend::{init_git_sync, push_patterns, pull_patterns, sync_status, save_git_config};
@@ -22,6 +23,12 @@ pub use supabase_backend::{
     supabase_status, save_supabase_config, is_supabase_available, get_schema_sql,
     create_team, list_teams, invite_to_team, join_team, share_pattern,
     Team, TeamMember, SupabaseStatus, PullResult,
+};
+pub use p2p_backend::{
+    init_p2p_sync, sync_with_peer, sync_with_all_peers, p2p_status,
+    add_peer, remove_peer, list_peers, is_p2p_available,
+    P2PConfig, P2PStatus, PeerInfo, DiscoveryMethod, CRDTMergeStrategy,
+    CRDTMap, CRDTEntry,
 };
 
 /// Configuration for sync operations
@@ -70,6 +77,12 @@ pub enum SyncBackend {
     Supabase {
         url: String,
         // Key stored in MANA_SUPABASE_KEY env var
+    },
+    /// P2P sync (decentralized, no central server)
+    P2P {
+        discovery: String,
+        listen_port: u16,
+        peers: Vec<String>,
     },
 }
 
