@@ -231,13 +231,11 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     // Find tool results with errors
     for result in &trajectory.tool_results {
         if result.is_error || result.content.to_lowercase().contains("error") {
-            // Extract the key error message (first line or key phrase)
-            let error_msg = extract_error_message(&result.content);
-
-            // Only create pattern if we have a meaningful error message
-            if error_msg.len() < 10 || error_msg == "AVOID:" {
-                continue;
-            }
+            // Extract the key error message (only if actionable)
+            let error_msg = match extract_error_message(&result.content) {
+                Some(msg) => msg,
+                None => continue,  // Skip non-actionable errors
+            };
 
             // Extract task category (first few words)
             let task_category = extract_task_category(&trajectory.user_query);
@@ -283,34 +281,94 @@ fn extract_task_category(query: &str) -> String {
 }
 
 /// Extract key error message from tool result
-fn extract_error_message(content: &str) -> String {
-    // Look for common error patterns
+///
+/// Returns None if no actionable error message is found
+fn extract_error_message(content: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
 
-    // Find line with "error" or "Error"
-    for line in &lines {
-        let lower = line.to_lowercase();
-        if lower.contains("error:") || lower.contains("failed:") {
-            return truncate(line.trim(), 150).to_string();
-        }
+    // Skip if content looks like noise (line numbers, code output, etc.)
+    if is_noise_content(content) {
+        return None;
     }
 
-    // Look for exit code
-    for line in &lines {
-        if line.contains("exit code") || line.contains("Exit code") {
-            return truncate(line.trim(), 150).to_string();
-        }
-    }
-
-    // First non-empty line
+    // Look for specific actionable error patterns
     for line in &lines {
         let trimmed = line.trim();
-        if !trimmed.is_empty() && trimmed.len() > 5 {
-            return truncate(trimmed, 150).to_string();
+        let lower = trimmed.to_lowercase();
+
+        // Skip line number prefixes (e.g., "123→", "1419→")
+        if trimmed.chars().take_while(|c| c.is_ascii_digit()).count() > 0
+           && trimmed.contains('→') {
+            continue;
+        }
+
+        // Skip short lines
+        if trimmed.len() < 15 {
+            continue;
+        }
+
+        // Look for actionable error messages
+        if lower.contains("error:") || lower.contains("failed:")
+           || lower.contains("cannot find") || lower.contains("no such file")
+           || lower.contains("permission denied") || lower.contains("command not found")
+           || lower.contains("syntax error") || lower.contains("type error")
+           || lower.contains("does not exist") || lower.contains("undefined")
+           || lower.contains("not found") {
+            // Remove noisy prefixes
+            let clean = clean_error_line(trimmed);
+            if clean.len() >= 20 && !is_noise_content(&clean) {
+                return Some(truncate(&clean, 120).to_string());
+            }
         }
     }
 
-    truncate(content, 150).to_string()
+    None
+}
+
+/// Check if content is likely noise (code output, line numbers, etc.)
+fn is_noise_content(content: &str) -> bool {
+    let lower = content.to_lowercase();
+
+    // Skip if it's mostly line numbers/code output
+    if content.chars().filter(|c| c.is_ascii_digit() || *c == '→' || *c == '│').count()
+       > content.len() / 4 {
+        return true;
+    }
+
+    // Skip console.log/print statements
+    if lower.contains("console.log") || lower.contains("console.err")
+       || lower.contains("print(") {
+        return true;
+    }
+
+    // Skip generic tool errors
+    if lower.contains("<tool_use_error>") && !lower.contains("command") {
+        return true;
+    }
+
+    // Skip markdown/formatting
+    if content.starts_with('#') || content.starts_with('-') || content.starts_with('*') {
+        return true;
+    }
+
+    false
+}
+
+/// Clean up error line by removing noise prefixes
+fn clean_error_line(line: &str) -> String {
+    let mut result = line.to_string();
+
+    // Remove exit code prefix
+    if let Some(idx) = result.find("Exit code") {
+        result = result[idx..].to_string();
+    }
+
+    // Remove arrow prefixes
+    if let Some(idx) = result.find('→') {
+        result = result[idx + '→'.len_utf8()..].trim().to_string();
+    }
+
+    result
 }
 
 fn collect_jsonl_files(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -426,6 +484,7 @@ mod tests {
 
     #[test]
     fn test_extract_failure_patterns() {
+        // Use an actionable error message that passes the filter
         let trajectory = Trajectory {
             session_id: "test".into(),
             user_query: "Run the tests".into(),
@@ -433,7 +492,7 @@ mod tests {
             tool_calls: vec![],
             tool_results: vec![ToolResult {
                 tool_use_id: "123".into(),
-                content: "Error: test failed".into(),
+                content: "Error: cannot find module 'missing-module' - check your dependencies".into(),
                 is_error: true,
             }],
             verdict: Some(Verdict { success: false, confidence: 0.8 }),
@@ -443,6 +502,26 @@ mod tests {
         assert_eq!(patterns.len(), 1);
         assert_eq!(patterns[0].tool_type, "failure");
         assert!(patterns[0].context_query.contains("Pitfall"));
-        assert!(patterns[0].context_query.contains("test failed"));
+        assert!(patterns[0].context_query.contains("cannot find module"));
+    }
+
+    #[test]
+    fn test_noise_content_filtered() {
+        // Noise content should not create patterns
+        let trajectory = Trajectory {
+            session_id: "test".into(),
+            user_query: "Run tests".into(),
+            assistant_content: "Failed".into(),
+            tool_calls: vec![],
+            tool_results: vec![ToolResult {
+                tool_use_id: "123".into(),
+                content: "123→    console.error('test')".into(),  // Noise
+                is_error: true,
+            }],
+            verdict: Some(Verdict { success: false, confidence: 0.8 }),
+        };
+
+        let patterns = extract_failure_patterns(&trajectory);
+        assert_eq!(patterns.len(), 0, "Noise content should be filtered");
     }
 }
