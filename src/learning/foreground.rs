@@ -206,22 +206,42 @@ fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     patterns
 }
 
-/// Extract meaningful context from tool input
+/// Extract meaningful context from tool input with tech stack hints
 fn extract_tool_context(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
         "Edit" | "Write" | "MultiEdit" => {
             let file_path = input.get("file_path")
                 .and_then(|v| v.as_str())
-                .map(|p| extract_filename(p))
-                .unwrap_or("unknown file");
+                .unwrap_or("unknown");
+            let filename = extract_filename(file_path);
+            let ext = extract_extension(file_path);
+
+            // Include tech stack keywords for better similarity matching
+            let tech_hint = match ext {
+                "rs" => "rust cargo",
+                "ts" | "tsx" => "typescript npm node",
+                "js" | "jsx" => "javascript npm node",
+                "py" => "python pip",
+                "go" => "golang",
+                "rb" => "ruby",
+                "java" => "java maven",
+                "sh" | "bash" => "shell bash",
+                "json" => "json config",
+                "toml" => "toml rust cargo",
+                "yaml" | "yml" => "yaml config",
+                "md" => "markdown docs",
+                _ => "",
+            };
+
             let old_str_preview = input.get("old_string")
                 .and_then(|v| v.as_str())
-                .map(|s| truncate(s, 50))
+                .map(|s| truncate(s, 40))
                 .unwrap_or("");
+
             if !old_str_preview.is_empty() {
-                format!("editing {} (replacing '{}')", file_path, old_str_preview)
+                format!("{} {} editing {} (replacing '{}')", ext, tech_hint, filename, old_str_preview)
             } else {
-                format!("writing to {}", file_path)
+                format!("{} {} writing to {}", ext, tech_hint, filename)
             }
         }
         "Bash" => {
@@ -283,6 +303,11 @@ fn extract_tool_context(tool_name: &str, input: &serde_json::Value) -> String {
 /// Extract filename from path
 fn extract_filename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Extract file extension from path
+fn extract_extension(path: &str) -> &str {
+    path.rsplit('.').next().unwrap_or("")
 }
 
 /// Extract patterns from failed trajectories (what to avoid)
@@ -629,6 +654,8 @@ mod tests {
         assert_eq!(patterns[0].tool_type, "Edit");
         assert!(patterns[0].context_query.contains("Edit"));
         assert!(patterns[0].context_query.contains("main.rs"));
+        // Should include tech stack hints
+        assert!(patterns[0].context_query.contains("rust"), "Should include rust tech hint");
     }
 
     #[test]

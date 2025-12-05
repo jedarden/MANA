@@ -358,4 +358,28 @@ mod tests {
         // Should have some score without tech penalty affecting it
         assert!(score >= 0.0, "Generic query should match generically: {}", score);
     }
+
+    #[test]
+    fn test_shell_edit_matching() {
+        // Shell file query should match shell file patterns
+        let query = "Editing sh shell bash file test.sh";
+        let pattern = "Task: Understand code\nApproach: Edit - sh shell bash editing start.sh (replacing '#!/bin/bash')";
+
+        let score = calculate_similarity(query, pattern);
+        println!("Shell edit match score: {}", score);
+        // Should have a reasonable match (same tech stack = 1.5x boost)
+        assert!(score >= 0.35, "Shell query should match shell patterns: {}", score);
+    }
+
+    #[test]
+    fn test_rust_edit_no_shell_match() {
+        // Rust file query should NOT match shell patterns well
+        let query = "Editing rs rust cargo toml crate file main.rs";
+        let pattern = "Task: Understand code\nApproach: Edit - sh shell bash editing start.sh";
+
+        let score = calculate_similarity(query, pattern);
+        println!("Rust vs shell match score: {}", score);
+        // Should have low score due to tech stack mismatch (0.3x penalty)
+        assert!(score < 0.35, "Rust query should NOT match shell patterns well: {}", score);
+    }
 }
