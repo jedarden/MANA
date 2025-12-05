@@ -3,9 +3,11 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod bench;
 mod hooks;
 mod learning;
 mod storage;
+mod update;
 
 /// MANA - Memory-Augmented Neural Assistant
 /// High-performance learning system for Claude Code context injection
@@ -48,7 +50,11 @@ enum Commands {
     Init,
 
     /// Check for updates and self-update if available
-    Update,
+    Update {
+        /// Actually install the update (otherwise just checks)
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Debug: show sample patterns for inspection
     Debug {
@@ -69,6 +75,9 @@ enum Commands {
 
     /// Reset patterns and re-learn from logs
     Relearn,
+
+    /// Run performance benchmarks
+    Bench,
 }
 
 #[tokio::main]
@@ -115,9 +124,8 @@ async fn main() -> Result<()> {
             info!("Initializing MANA");
             storage::init().await?;
         }
-        Commands::Update => {
-            info!("Checking for updates");
-            println!("Update functionality not yet implemented");
+        Commands::Update { force } => {
+            update::update_command(force).await?;
         }
         Commands::Debug { limit } => {
             storage::debug_patterns(limit).await?;
@@ -127,6 +135,9 @@ async fn main() -> Result<()> {
         }
         Commands::Relearn => {
             storage::relearn().await?;
+        }
+        Commands::Bench => {
+            bench::run_benchmarks().await?;
         }
     }
 
