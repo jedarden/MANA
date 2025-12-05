@@ -49,6 +49,14 @@ argon2 = "0.5"
 base64 = "0.22"
 rand = "0.8"
 
+# S3 sync backend (optional, compile with --features s3)
+aws-config = { version = "1.5", optional = true }
+aws-sdk-s3 = { version = "1.56", optional = true }
+
+[features]
+default = []
+s3 = ["aws-config", "aws-sdk-s3"]
+
 [dev-dependencies]
 tempfile = "3"
 

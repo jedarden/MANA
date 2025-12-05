@@ -11,9 +11,11 @@ pub mod sanitize;
 pub mod export;
 pub mod crypto;
 pub mod git_backend;
+pub mod s3_backend;
 
 pub use export::{export_patterns, import_patterns};
 pub use git_backend::{init_git_sync, push_patterns, pull_patterns, sync_status, save_git_config};
+pub use s3_backend::{init_s3_sync, push_patterns_s3, pull_patterns_s3, s3_status, save_s3_config, is_s3_available};
 
 /// Configuration for sync operations
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,0 +1,13 @@
+enabled = true
+interval_minutes = 60
+
+[backend]
+type = "Git"
+remote = ""
+branch = "main"
+
+[security]
+sanitize_paths = true
+redact_secrets = true
+encrypt = true
+visibility = "private"

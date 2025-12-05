@@ -119,12 +119,24 @@ enum Commands {
 enum SyncAction {
     /// Initialize sync with a git repository
     Init {
-        /// Git remote URL (leave empty for local-only init)
+        /// Backend type: git (default) or s3
+        #[arg(long, default_value = "git")]
+        backend: String,
+        /// Git remote URL (for git backend, leave empty for local-only init)
         #[arg(long, default_value = "")]
         remote: String,
-        /// Branch to sync with
+        /// Branch to sync with (for git backend)
         #[arg(long, default_value = "main")]
         branch: String,
+        /// S3 bucket name (for s3 backend)
+        #[arg(long, default_value = "")]
+        bucket: String,
+        /// S3 prefix/folder (for s3 backend)
+        #[arg(long, default_value = "mana")]
+        prefix: String,
+        /// AWS region (for s3 backend)
+        #[arg(long, default_value = "us-east-1")]
+        region: String,
     },
 
     /// Push patterns to the remote repository
@@ -270,28 +282,62 @@ async fn main() -> Result<()> {
             let db_path = mana_dir.join("metadata.sqlite");
 
             match action {
-                SyncAction::Init { remote, branch } => {
-                    // Save config first
-                    sync::save_git_config(&mana_dir, &remote, &branch)?;
-                    // Then initialize the repository
-                    sync::init_git_sync(&mana_dir, &remote, &branch)?;
-                    println!("✅ Sync initialized");
-                    if !remote.is_empty() {
-                        println!("   Remote: {}", remote);
+                SyncAction::Init { backend, remote, branch, bucket, prefix, region } => {
+                    match backend.to_lowercase().as_str() {
+                        "s3" => {
+                            if bucket.is_empty() {
+                                return Err(anyhow::anyhow!("S3 bucket is required. Use --bucket <name>"));
+                            }
+                            if !sync::is_s3_available() {
+                                return Err(anyhow::anyhow!(
+                                    "S3 sync not available. Rebuild MANA with: cargo build --release --features s3"
+                                ));
+                            }
+                            sync::save_s3_config(&mana_dir, &bucket, &prefix, &region)?;
+                            sync::init_s3_sync(&mana_dir, &bucket, &prefix, &region).await?;
+                        }
+                        "git" | _ => {
+                            // Save config first
+                            sync::save_git_config(&mana_dir, &remote, &branch)?;
+                            // Then initialize the repository
+                            sync::init_git_sync(&mana_dir, &remote, &branch)?;
+                            println!("✅ Sync initialized");
+                            if !remote.is_empty() {
+                                println!("   Remote: {}", remote);
+                            }
+                            println!("   Branch: {}", branch);
+                        }
                     }
-                    println!("   Branch: {}", branch);
                 }
                 SyncAction::Push { message, passphrase } => {
                     let passphrase = passphrase.or_else(|| std::env::var("MANA_SYNC_KEY").ok());
                     let security = sync::SecurityConfig::default();
 
-                    sync::push_patterns(
-                        &mana_dir,
-                        &db_path,
-                        &security,
-                        passphrase.as_deref(),
-                        message.as_deref(),
-                    )?;
+                    // Auto-detect backend from config
+                    let config_path = mana_dir.join("sync.toml");
+                    let config = sync::load_sync_config(&config_path)?;
+                    match &config.backend {
+                        sync::SyncBackend::S3 { .. } => {
+                            sync::push_patterns_s3(
+                                &mana_dir,
+                                &db_path,
+                                &security,
+                                passphrase.as_deref(),
+                            ).await?;
+                        }
+                        sync::SyncBackend::Git { .. } => {
+                            sync::push_patterns(
+                                &mana_dir,
+                                &db_path,
+                                &security,
+                                passphrase.as_deref(),
+                                message.as_deref(),
+                            )?;
+                        }
+                        sync::SyncBackend::Supabase { .. } => {
+                            return Err(anyhow::anyhow!("Supabase sync not yet implemented"));
+                        }
+                    }
                 }
                 SyncAction::Pull { passphrase, merge } => {
                     let passphrase = passphrase.or_else(|| std::env::var("MANA_SYNC_KEY").ok());
@@ -301,40 +347,84 @@ async fn main() -> Result<()> {
                         _ => sync::export::MergeStrategy::Add,
                     };
 
-                    sync::pull_patterns(
-                        &mana_dir,
-                        &db_path,
-                        passphrase.as_deref(),
-                        merge_strategy,
-                    )?;
+                    // Auto-detect backend from config
+                    let config_path = mana_dir.join("sync.toml");
+                    let config = sync::load_sync_config(&config_path)?;
+                    match &config.backend {
+                        sync::SyncBackend::S3 { .. } => {
+                            sync::pull_patterns_s3(
+                                &mana_dir,
+                                &db_path,
+                                passphrase.as_deref(),
+                                merge_strategy,
+                            ).await?;
+                        }
+                        sync::SyncBackend::Git { .. } => {
+                            sync::pull_patterns(
+                                &mana_dir,
+                                &db_path,
+                                passphrase.as_deref(),
+                                merge_strategy,
+                            )?;
+                        }
+                        sync::SyncBackend::Supabase { .. } => {
+                            return Err(anyhow::anyhow!("Supabase sync not yet implemented"));
+                        }
+                    }
                 }
                 SyncAction::Status => {
-                    let status = sync::sync_status(&mana_dir)?;
+                    // Auto-detect backend from config
+                    let config_path = mana_dir.join("sync.toml");
+                    let config = sync::load_sync_config(&config_path)?;
 
                     println!("MANA Sync Status");
                     println!("================");
                     println!();
 
-                    if !status.configured {
-                        println!("⚠️  Sync not configured");
-                        println!("   Run 'mana sync init' to set up synchronization");
-                    } else {
-                        println!("Backend: {}", status.backend);
-                        println!("Initialized: {}", if status.repo_initialized { "✅" } else { "❌" });
+                    match &config.backend {
+                        sync::SyncBackend::S3 { bucket, prefix, region } => {
+                            let s3_status = sync::s3_status(&mana_dir).await?;
+                            println!("Backend: s3");
+                            println!("Bucket: {}", bucket);
+                            println!("Prefix: {}", prefix);
+                            println!("Region: {}", region);
+                            println!("Patterns file: {}", if s3_status.object_exists { "✅ Exists" } else { "❌ Not found" });
+                            if let Some(modified) = &s3_status.last_modified {
+                                println!("Last modified: {}", modified);
+                            }
+                            if let Some(size) = s3_status.size_bytes {
+                                println!("Size: {} bytes", size);
+                            }
+                        }
+                        sync::SyncBackend::Git { .. } => {
+                            let status = sync::sync_status(&mana_dir)?;
+                            if !status.configured {
+                                println!("⚠️  Sync not configured");
+                                println!("   Run 'mana sync init' to set up synchronization");
+                            } else {
+                                println!("Backend: {}", status.backend);
+                                println!("Initialized: {}", if status.repo_initialized { "✅" } else { "❌" });
 
-                        if let Some(remote) = &status.remote {
-                            println!("Remote: {}", remote);
+                                if let Some(remote) = &status.remote {
+                                    println!("Remote: {}", remote);
+                                }
+                                if let Some(branch) = &status.branch {
+                                    println!("Branch: {}", branch);
+                                }
+                                if status.local_changes {
+                                    println!("Local changes: ⚠️  Uncommitted changes");
+                                } else {
+                                    println!("Local changes: ✅ None");
+                                }
+                                if let Some(last_sync) = &status.last_sync {
+                                    println!("Last sync: {}", last_sync);
+                                }
+                            }
                         }
-                        if let Some(branch) = &status.branch {
-                            println!("Branch: {}", branch);
-                        }
-                        if status.local_changes {
-                            println!("Local changes: ⚠️  Uncommitted changes");
-                        } else {
-                            println!("Local changes: ✅ None");
-                        }
-                        if let Some(last_sync) = &status.last_sync {
-                            println!("Last sync: {}", last_sync);
+                        sync::SyncBackend::Supabase { url } => {
+                            println!("Backend: supabase");
+                            println!("URL: {}", url);
+                            println!("Status: ⚠️  Not yet implemented");
                         }
                     }
                 }
