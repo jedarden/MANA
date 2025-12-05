@@ -50,24 +50,54 @@ impl ErrorType {
     pub fn from_content(content: &str) -> Option<Self> {
         let lower = content.to_lowercase();
 
-        if lower.contains("compile") && lower.contains("error")
-            || lower.contains("cannot find") && lower.contains("type")
-            || lower.contains("undefined reference")
+        // Compilation errors - require actual compiler output patterns
+        // Avoid matching code discussing compilation
+        let compile_error_indicators = [
+            "error[e",              // Rust error codes like error[E0308]
+            "error: cannot find",
+            "error: expected",
+            "error: mismatched",
+            "undefined reference to",
+            "ld: symbol(s) not found",
+            "cannot find module",
+            "module not found",
+            "import error:",
+        ];
+
+        if compile_error_indicators.iter().any(|ind| lower.contains(ind))
         {
             return Some(ErrorType::CompileError);
         }
 
-        if lower.contains("runtime error")
-            || lower.contains("panic")
-            || lower.contains("segmentation fault")
-            || lower.contains("stack overflow")
-        {
+        // Runtime errors - require actual error context, not just keywords in code
+        // Avoid matching: panic! macro usage in code, "panic" in error handling docs, etc.
+        let runtime_indicators = [
+            "runtime error:",
+            "panicked at",           // Rust actual panic output
+            "thread 'main' panicked",
+            "segmentation fault",
+            "sigsegv",
+            "stack overflow",
+            "abort trap",
+            "core dumped",
+            "process exited with",
+            "unhandled exception",
+        ];
+
+        if runtime_indicators.iter().any(|ind| lower.contains(ind)) {
             return Some(ErrorType::RuntimeError);
         }
 
+        // File not found - require actual error context
+        // Avoid matching "if not found" or "return not found" in code
         if lower.contains("no such file")
             || lower.contains("file not found")
-            || lower.contains("not found")
+            || (lower.contains("not found") && (
+                lower.contains("error") ||
+                lower.contains("errno") ||
+                lower.contains("failed") ||
+                lower.contains("cannot")
+            ))
         {
             return Some(ErrorType::FileNotFound);
         }
@@ -78,30 +108,85 @@ impl ErrorType {
             return Some(ErrorType::PermissionDenied);
         }
 
-        if lower.contains("timeout")
-            || lower.contains("timed out")
+        // More specific timeout detection - require actual error context
+        // Avoid matching config like "timeout_ms" or docs about timeouts
+        if (lower.contains("timed out") && !lower.contains("timeout_"))
+            || lower.contains("timeout exceeded")
+            || lower.contains("timeout error")
+            || lower.contains("operation timed out")
+            || lower.contains("request timed out")
+            || lower.contains("connection timed out")
         {
             return Some(ErrorType::Timeout);
         }
 
-        if lower.contains("syntax error")
-            || lower.contains("unexpected token")
-            || lower.contains("parse error")
-        {
+        // Syntax errors - require error context
+        // Avoid matching code discussing syntax errors
+        let syntax_indicators = [
+            "syntax error:",
+            "syntaxerror:",
+            "unexpected token",      // JS/TS actual error
+            "parse error:",
+            "parsing error:",
+            "invalid syntax",        // Python
+            "expected `;`",          // Rust
+            "expected `{`",
+            "expected `}`",
+            "missing semicolon",
+        ];
+
+        // Check for actual error output patterns
+        if syntax_indicators.iter().any(|ind| lower.contains(ind)) {
             return Some(ErrorType::SyntaxError);
         }
 
-        if lower.contains("test failed")
-            || lower.contains("assertion failed")
-            || lower.contains("failures:")
+        // Test failures - require actual test output patterns
+        // Avoid matching test code that checks for failures
+        if lower.contains("test result: failed")  // Rust test output
+            || lower.contains("tests failed")      // Generic test runners
+            || lower.contains("assertion failed:") // With colon = actual failure
+            || lower.contains("assertionerror:")   // Python
+            || (lower.contains("failures:") && lower.contains("passed")) // Test summary line
+            || lower.contains("fail: ")            // TAP output
         {
             return Some(ErrorType::TestFailure);
         }
 
-        if lower.contains("error:")
-            || lower.contains("failed:")
-            || lower.contains("exception:")
-        {
+        // Generic error detection - require more specific patterns
+        // Avoid matching "0 errors", "no errors", error handling code, etc.
+        let error_indicators = [
+            "error: ",      // With space after colon
+            "error!",       // Error with exclamation
+            "failed!",      // Failed with exclamation
+            "exception:",   // Exception with colon
+            ": error",      // Colon before error
+            "exited with error",
+            "returned error",
+            "threw exception",
+            "fatal error",
+            "critical error",
+        ];
+
+        // Check for error indicators but avoid false positives
+        let has_error_indicator = error_indicators.iter()
+            .any(|ind| lower.contains(ind));
+
+        // Exclude common false positives
+        let false_positive_patterns = [
+            "0 error",
+            "no error",
+            "without error",
+            "error handling",
+            "error message",
+            "errortype",
+            "errors.is_empty",
+            "expected error",
+        ];
+
+        let is_false_positive = false_positive_patterns.iter()
+            .any(|fp| lower.contains(fp));
+
+        if has_error_indicator && !is_false_positive {
             return Some(ErrorType::Other("unspecified error".into()));
         }
 
@@ -147,17 +232,30 @@ impl TrajectoryAnalyzer {
 
     /// Analyze a trajectory to determine its outcome
     pub fn analyze(&self, trajectory: &Trajectory) -> TrajectoryOutcome {
-        // Collect error types from tool results
-        let error_types: Vec<ErrorType> = trajectory.tool_results
+        // Count explicit errors (is_error=true) - these are real failures
+        let explicit_errors: Vec<ErrorType> = trajectory.tool_results
             .iter()
-            .filter_map(|r| {
-                if r.is_error {
-                    Some(ErrorType::Other("explicit error".into()))
-                } else {
-                    ErrorType::from_content(&r.content)
-                }
-            })
+            .filter(|r| r.is_error)
+            .map(|_| ErrorType::Other("explicit error".into()))
             .collect();
+
+        // Only look for content-based errors if the content is short (likely error output)
+        // Long content (>2000 chars) is likely code/docs and should be ignored
+        let content_errors: Vec<ErrorType> = trajectory.tool_results
+            .iter()
+            .filter(|r| !r.is_error && r.content.len() < 2000)
+            .filter_map(|r| ErrorType::from_content(&r.content))
+            .collect();
+
+        // Combine errors, but only count content errors if they're severe
+        let error_types: Vec<ErrorType> = if !explicit_errors.is_empty() {
+            explicit_errors
+        } else {
+            // Filter to only severe content errors (severity >= 3)
+            content_errors.into_iter()
+                .filter(|e| e.severity() >= 3)
+                .collect()
+        };
 
         let has_errors = !error_types.is_empty();
 
@@ -170,10 +268,36 @@ impl TrajectoryAnalyzer {
         // Check for success indicators
         let has_success_indicators = self.has_success_indicators(trajectory);
 
-        // Determine overall success
-        let success = !has_errors && !abandoned && (
-            has_success_indicators || !trajectory.tool_calls.is_empty()
-        );
+        // Count successful tool executions (not errors)
+        let successful_tools = trajectory.tool_results
+            .iter()
+            .filter(|r| !r.is_error)
+            .count();
+
+        let total_tools = trajectory.tool_results.len();
+
+        // Determine overall success:
+        // - If has success indicators, minor errors are ok (recovery)
+        // - If most tools succeeded, trajectory is likely ok
+        // - If abandoned or all tools failed, it's a failure
+        let success = if abandoned {
+            false
+        } else if has_success_indicators {
+            // Success indicators override minor errors (Claude recovered)
+            true
+        } else if has_errors && successful_tools == 0 {
+            // All tool results were errors - definite failure
+            false
+        } else if !has_errors && !trajectory.tool_calls.is_empty() {
+            // No errors and had tool calls - success
+            true
+        } else if has_errors && successful_tools > 0 && successful_tools as f64 / total_tools as f64 > 0.5 {
+            // More than half succeeded despite some errors - likely ok
+            true
+        } else {
+            // Default: if tool calls happened without errors, it's a success
+            !has_errors
+        };
 
         // Calculate confidence
         let confidence = if has_errors {
