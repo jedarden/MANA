@@ -512,7 +512,7 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                     let conn = rusqlite::Connection::open(&db_path)?;
                     reflection::init_reflection_tables(&conn)?;
 
-                    // Parse recent trajectories
+                    // Parse recent trajectories from all JSONL files
                     let start = Instant::now();
                     let log_dir = dirs::home_dir()
                         .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
@@ -521,14 +521,20 @@ async fn run_async_main(cli: Cli) -> Result<()> {
 
                     let mut all_trajectories = Vec::new();
                     if log_dir.exists() {
+                        // Collect all JSONL files in subdirectories (same approach as foreground learning)
                         for entry in std::fs::read_dir(&log_dir)? {
                             let entry = entry?;
                             let path = entry.path();
                             if path.is_dir() {
-                                let log_file = path.join("logs.jsonl");
-                                if log_file.exists() {
-                                    if let Ok(trajectories) = learning::trajectory::parse_trajectories(&log_file, 0) {
-                                        all_trajectories.extend(trajectories);
+                                // Scan all JSONL files in project directory
+                                if let Ok(subentries) = std::fs::read_dir(&path) {
+                                    for subentry in subentries.flatten() {
+                                        let subpath = subentry.path();
+                                        if subpath.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                                            if let Ok(trajectories) = learning::trajectory::parse_trajectories(&subpath, 0) {
+                                                all_trajectories.extend(trajectories);
+                                            }
+                                        }
                                     }
                                 }
                             }
