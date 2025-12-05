@@ -278,12 +278,11 @@ fn format_failure_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
     })
 }
 
-/// Extract a concise insight from the context query
+/// Extract a concise, actionable insight from the context query
 fn extract_insight(context_query: &str) -> String {
     let lines: Vec<&str> = context_query.lines().collect();
 
-    // Extract Task context for relevance
-    let mut task_hint = String::new();
+    // Extract components
     let mut approach_detail = String::new();
     let mut pitfall_msg = String::new();
 
@@ -297,36 +296,23 @@ fn extract_insight(context_query: &str) -> String {
                 pitfall_msg = format!("⚠️ {}", truncate_str(content, 100));
             }
         }
-        // Extract Task context (short)
-        else if trimmed.starts_with("Task:") {
-            let content = trimmed.trim_start_matches("Task:").trim();
-            // Get just the action type from task
-            task_hint = extract_action_type(content);
-        }
-        // Extract Approach content - the specific action
+        // Extract Approach content - the specific action taken
         else if trimmed.starts_with("Approach:") {
             let content = trimmed.trim_start_matches("Approach:").trim();
             if !content.is_empty() && content.len() > 5 {
-                // Extract the specific action after the tool name
-                approach_detail = extract_approach_action(content);
+                // Format the approach as an actionable hint
+                approach_detail = format_approach_hint(content);
             }
         }
     }
 
-    // Build contextual insight
+    // Prioritize: pitfalls first (warnings), then approaches (successful patterns)
     if !pitfall_msg.is_empty() {
         return pitfall_msg;
     }
 
     if !approach_detail.is_empty() {
-        if !task_hint.is_empty() {
-            return format!("For {}: {}", task_hint, approach_detail);
-        }
         return approach_detail;
-    }
-
-    if !task_hint.is_empty() {
-        return format!("Pattern for: {}", task_hint);
     }
 
     // Fallback: use first non-empty meaningful line
@@ -348,42 +334,30 @@ fn extract_insight(context_query: &str) -> String {
     truncate_str(context_query.lines().next().unwrap_or(context_query), 80).to_string()
 }
 
-/// Extract the action type from a task description
-fn extract_action_type(task: &str) -> String {
-    // Common action verbs to identify
-    let actions = ["Research", "Create", "Build", "Fix", "Add", "Update",
-                   "Implement", "Analyze", "Configure", "Setup", "Test"];
-
-    let lower = task.to_lowercase();
-
-    for action in &actions {
-        if lower.contains(&action.to_lowercase()) {
-            // Return a short contextual hint
-            let words: Vec<&str> = task.split_whitespace().take(4).collect();
-            return words.join(" ");
-        }
-    }
-
-    // Default: first few words
-    let words: Vec<&str> = task.split_whitespace().take(3).collect();
-    words.join(" ")
-}
-
-/// Extract the specific action from approach string like "Bash - npm - Initialize..."
-fn extract_approach_action(approach: &str) -> String {
-    // Pattern: "ToolName - action - description"
+/// Format approach string into an actionable hint
+/// Input: "Bash - npm - Initialize project with package.json"
+/// Output: "Successfully ran `npm` to initialize project with package.json"
+fn format_approach_hint(approach: &str) -> String {
+    // Pattern: "ToolName - command - description"
     let parts: Vec<&str> = approach.splitn(3, " - ").collect();
 
-    if parts.len() >= 3 {
-        // Use the description part
-        return truncate_str(parts[2], 80).to_string();
-    } else if parts.len() == 2 {
-        // Use second part
-        return truncate_str(parts[1], 80).to_string();
+    match parts.as_slice() {
+        [tool, cmd, desc] => {
+            // Format based on tool type
+            match *tool {
+                "Bash" => format!("Ran `{}`: {}", cmd, truncate_str(desc, 60)),
+                "Edit" | "MultiEdit" => format!("{}", truncate_str(desc, 80)),
+                "Write" => format!("{}", truncate_str(desc, 80)),
+                "Read" | "Glob" | "Grep" => format!("{}", truncate_str(desc, 80)),
+                "Task" => format!("Delegated to {}: {}", cmd, truncate_str(desc, 50)),
+                _ => format!("{}: {}", tool, truncate_str(desc, 70)),
+            }
+        }
+        [tool, desc] => {
+            format!("{}", truncate_str(desc, 80))
+        }
+        _ => truncate_str(approach, 80).to_string(),
     }
-
-    // Just use the whole thing
-    truncate_str(approach, 80).to_string()
 }
 
 fn truncate_str(s: &str, max_len: usize) -> &str {
