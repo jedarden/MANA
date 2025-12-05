@@ -62,6 +62,9 @@ enum Commands {
         /// Minimum score threshold (success - failure)
         #[arg(long, default_value = "-2")]
         min_score: i64,
+        /// Preview what would be pruned without deleting
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Reset patterns and re-learn from logs
@@ -119,8 +122,8 @@ async fn main() -> Result<()> {
         Commands::Debug { limit } => {
             storage::debug_patterns(limit).await?;
         }
-        Commands::Prune { min_score } => {
-            storage::prune_patterns(min_score).await?;
+        Commands::Prune { min_score, dry_run } => {
+            storage::prune_patterns(min_score, dry_run).await?;
         }
         Commands::Relearn => {
             storage::relearn().await?;

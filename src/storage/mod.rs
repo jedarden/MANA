@@ -307,7 +307,7 @@ pub async fn debug_patterns(limit: usize) -> Result<()> {
 }
 
 /// Prune low-quality patterns
-pub async fn prune_patterns(min_score: i64) -> Result<()> {
+pub async fn prune_patterns(min_score: i64, dry_run: bool) -> Result<()> {
     let mana_dir = get_mana_dir()?;
     let db_path = mana_dir.join("metadata.sqlite");
 
@@ -318,11 +318,40 @@ pub async fn prune_patterns(min_score: i64) -> Result<()> {
 
     let store = PatternStore::open(&db_path)?;
     let before = store.count()?;
-    let pruned = store.prune_low_score(min_score)?;
-    let after = store.count()?;
 
-    println!("Pruned {} patterns (score < {})", pruned, min_score);
-    println!("Patterns: {} -> {}", before, after);
+    if dry_run {
+        // Preview what would be pruned
+        let to_prune = store.get_patterns_below_score(min_score)?;
+        println!("DRY RUN: Would prune {} patterns (score < {})", to_prune.len(), min_score);
+        println!();
+
+        if !to_prune.is_empty() {
+            println!("Patterns that would be removed:");
+            println!("{}", "-".repeat(60));
+            for pattern in &to_prune {
+                let score = pattern.success_count - pattern.failure_count;
+                let preview: String = pattern.context_query
+                    .lines()
+                    .take(1)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let preview = if preview.len() > 60 {
+                    format!("{}...", &preview[..60])
+                } else {
+                    preview
+                };
+                println!("  #{} [{}] score={}: {}", pattern.id, pattern.tool_type, score, preview);
+            }
+            println!();
+            println!("Run without --dry-run to actually delete these patterns.");
+        }
+    } else {
+        let pruned = store.prune_low_score(min_score)?;
+        let after = store.count()?;
+
+        println!("Pruned {} patterns (score < {})", pruned, min_score);
+        println!("Patterns: {} -> {}", before, after);
+    }
 
     Ok(())
 }
