@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [{
+          "type": "command",
+          "command": "cat | .mana/mana inject --tool edit 2>/dev/null || cat"
+        }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{
+          "type": "command",
+          "command": "cat | .mana/mana inject --tool bash 2>/dev/null || cat"
+        }]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [{
+          "type": "command",
+          "command": "cat | .mana/mana inject --tool task 2>/dev/null || cat"
+        }]
+      }
+    ],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": ".mana/mana session-end 2>/dev/null || true"
+      }]
+    }]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(.mana/mana:*)"
+    ]
+  }
+}
