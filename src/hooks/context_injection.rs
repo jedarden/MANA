@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::storage::{PatternStore, Pattern, calculate_similarity};
 
@@ -52,7 +52,8 @@ const PATTERNS_TO_SCORE: usize = 20;
 /// Maximum time budget for injection in milliseconds
 const INJECTION_TIMEOUT_MS: u128 = 10;
 
-/// Minimum relevance score to include a pattern (0 = no filtering)
+/// Minimum relevance score to include a pattern (currently unused but reserved for future)
+#[allow(dead_code)]
 const MIN_RELEVANCE_SCORE: usize = 0;
 
 /// Minimum similarity score for patterns after tech stack modifier applied
@@ -74,6 +75,7 @@ pub async fn inject_context(tool: &str) -> Result<()> {
         .filter_map(|line| line.ok())
         .collect::<Vec<_>>()
         .join("\n");
+    let stdin_time = start.elapsed().as_micros();
 
     if input.is_empty() {
         debug!("No input received, skipping context injection");
@@ -91,6 +93,7 @@ pub async fn inject_context(tool: &str) -> Result<()> {
             return Ok(());
         }
     };
+    let parse_time = start.elapsed().as_micros() - stdin_time;
 
     // Extract fields from nested input (Claude Code), tool_input (legacy), or flat structure
     let fields = if let Some(ref inp) = hook_input.input {
@@ -106,6 +109,7 @@ pub async fn inject_context(tool: &str) -> Result<()> {
     debug!("Query: {}", query);
 
     // Query ReasoningBank for patterns
+    let query_start = Instant::now();
     let context = match query_patterns(tool, &query) {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -116,16 +120,19 @@ pub async fn inject_context(tool: &str) -> Result<()> {
             }
         }
     };
+    let query_time = query_start.elapsed().as_micros();
 
     // Check time budget
     let elapsed = start.elapsed().as_millis();
     if elapsed > INJECTION_TIMEOUT_MS {
-        warn!("Context injection exceeded time budget: {}ms > {}ms", elapsed, INJECTION_TIMEOUT_MS);
+        warn!("Context injection exceeded time budget: {}ms > {}ms (stdin: {}µs, parse: {}µs, query: {}µs)",
+              elapsed, INJECTION_TIMEOUT_MS, stdin_time, parse_time, query_time);
     }
 
     // If we have context, inject it as a system-reminder style block
     if !context.context_block.is_empty() {
-        info!("Injecting {} patterns in {}ms", context.patterns_used.len(), elapsed);
+        debug!("Injecting {} patterns in {}ms (stdin: {}µs, parse: {}µs, query: {}µs)",
+               context.patterns_used.len(), elapsed, stdin_time, parse_time, query_time);
         println!("<mana-context>");
         println!("{}", context.context_block);
         println!("</mana-context>");
@@ -142,6 +149,8 @@ pub async fn inject_context(tool: &str) -> Result<()> {
 
 /// Query patterns from the ReasoningBank
 fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
+    let _query_start = Instant::now();
+
     // Get MANA data directory
     let mana_dir = get_mana_dir()?;
     let db_path = mana_dir.join("metadata.sqlite");
@@ -155,7 +164,10 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     }
 
     // Open pattern store in read-only mode for faster access
+    let db_open_start = Instant::now();
     let store = PatternStore::open_readonly(&db_path)?;
+    let db_open_time = db_open_start.elapsed().as_micros();
+    debug!("DB open: {}µs", db_open_time);
 
     // Map tool argument to database tool_types - prioritize exact matches
     let primary_types: Vec<&str> = match tool {
@@ -344,7 +356,8 @@ fn format_generic_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
     })
 }
 
-/// Format failure patterns into warnings
+/// Format failure patterns into warnings (reserved for future use)
+#[allow(dead_code)]
 fn format_failure_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
     let mut context_lines = Vec::new();
     let mut pattern_ids = Vec::new();
@@ -445,7 +458,7 @@ fn format_approach_hint(approach: &str) -> String {
                 _ => format!("{}: {}", tool, truncate_str(desc, 70)),
             }
         }
-        [tool, desc] => {
+        [_tool, desc] => {
             format!("{}", truncate_str(desc, 80))
         }
         _ => truncate_str(approach, 80).to_string(),

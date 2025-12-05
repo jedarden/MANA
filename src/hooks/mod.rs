@@ -3,9 +3,6 @@
 //! Pre-hooks inject context from ReasoningBank before tool execution.
 //! Session-end hooks trigger learning when threshold is met.
 
-use anyhow::Result;
-use tracing::debug;
-
 mod context_injection;
 mod session_end_handler;
 
