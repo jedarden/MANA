@@ -107,6 +107,51 @@ enum Commands {
         #[arg(long, default_value = "add")]
         merge: String,
     },
+
+    /// Sync patterns with a remote repository
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SyncAction {
+    /// Initialize sync with a git repository
+    Init {
+        /// Git remote URL (leave empty for local-only init)
+        #[arg(long, default_value = "")]
+        remote: String,
+        /// Branch to sync with
+        #[arg(long, default_value = "main")]
+        branch: String,
+    },
+
+    /// Push patterns to the remote repository
+    Push {
+        /// Commit message
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Passphrase for encryption (reads from MANA_SYNC_KEY env var if not provided)
+        #[arg(long)]
+        passphrase: Option<String>,
+    },
+
+    /// Pull patterns from the remote repository
+    Pull {
+        /// Passphrase for decryption (reads from MANA_SYNC_KEY env var if not provided)
+        #[arg(long)]
+        passphrase: Option<String>,
+        /// Merge strategy: add (default), replace, keep-best
+        #[arg(long, default_value = "add")]
+        merge: String,
+    },
+
+    /// Show sync status
+    Status,
+
+    /// Set the encryption passphrase
+    SetKey,
 }
 
 #[tokio::main]
@@ -218,6 +263,94 @@ async fn main() -> Result<()> {
             println!("   Merged: {}", result.merged);
             if result.skipped > 0 {
                 println!("   Skipped: {}", result.skipped);
+            }
+        }
+        Commands::Sync { action } => {
+            let mana_dir = get_mana_dir()?;
+            let db_path = mana_dir.join("metadata.sqlite");
+
+            match action {
+                SyncAction::Init { remote, branch } => {
+                    // Save config first
+                    sync::save_git_config(&mana_dir, &remote, &branch)?;
+                    // Then initialize the repository
+                    sync::init_git_sync(&mana_dir, &remote, &branch)?;
+                    println!("✅ Sync initialized");
+                    if !remote.is_empty() {
+                        println!("   Remote: {}", remote);
+                    }
+                    println!("   Branch: {}", branch);
+                }
+                SyncAction::Push { message, passphrase } => {
+                    let passphrase = passphrase.or_else(|| std::env::var("MANA_SYNC_KEY").ok());
+                    let security = sync::SecurityConfig::default();
+
+                    sync::push_patterns(
+                        &mana_dir,
+                        &db_path,
+                        &security,
+                        passphrase.as_deref(),
+                        message.as_deref(),
+                    )?;
+                }
+                SyncAction::Pull { passphrase, merge } => {
+                    let passphrase = passphrase.or_else(|| std::env::var("MANA_SYNC_KEY").ok());
+                    let merge_strategy = match merge.as_str() {
+                        "replace" => sync::export::MergeStrategy::Replace,
+                        "keep-best" => sync::export::MergeStrategy::KeepBest,
+                        _ => sync::export::MergeStrategy::Add,
+                    };
+
+                    sync::pull_patterns(
+                        &mana_dir,
+                        &db_path,
+                        passphrase.as_deref(),
+                        merge_strategy,
+                    )?;
+                }
+                SyncAction::Status => {
+                    let status = sync::sync_status(&mana_dir)?;
+
+                    println!("MANA Sync Status");
+                    println!("================");
+                    println!();
+
+                    if !status.configured {
+                        println!("⚠️  Sync not configured");
+                        println!("   Run 'mana sync init' to set up synchronization");
+                    } else {
+                        println!("Backend: {}", status.backend);
+                        println!("Initialized: {}", if status.repo_initialized { "✅" } else { "❌" });
+
+                        if let Some(remote) = &status.remote {
+                            println!("Remote: {}", remote);
+                        }
+                        if let Some(branch) = &status.branch {
+                            println!("Branch: {}", branch);
+                        }
+                        if status.local_changes {
+                            println!("Local changes: ⚠️  Uncommitted changes");
+                        } else {
+                            println!("Local changes: ✅ None");
+                        }
+                        if let Some(last_sync) = &status.last_sync {
+                            println!("Last sync: {}", last_sync);
+                        }
+                    }
+                }
+                SyncAction::SetKey => {
+                    println!("🔑 To set the sync encryption key:");
+                    println!();
+                    println!("   Option 1: Environment variable");
+                    println!("   export MANA_SYNC_KEY=\"your-secure-passphrase\"");
+                    println!();
+                    println!("   Option 2: Pass directly to commands");
+                    println!("   mana sync push --passphrase \"your-secure-passphrase\"");
+                    println!("   mana sync pull --passphrase \"your-secure-passphrase\"");
+                    println!();
+                    println!("   💡 Tip: Use a strong passphrase (32+ characters)");
+                    println!("   Generate one: openssl rand -base64 32");
+                }
             }
         }
     }

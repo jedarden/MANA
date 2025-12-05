@@ -10,8 +10,10 @@ use std::path::Path;
 pub mod sanitize;
 pub mod export;
 pub mod crypto;
+pub mod git_backend;
 
 pub use export::{export_patterns, import_patterns};
+pub use git_backend::{init_git_sync, push_patterns, pull_patterns, sync_status, save_git_config};
 
 /// Configuration for sync operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
