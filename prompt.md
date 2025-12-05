@@ -99,31 +99,76 @@ git push origin main
 
 ### Step 6: Update GitHub Issue
 
-Post a progress update:
+Post a progress update using **well-formatted markdown with emojis** for visual appeal:
 
 ```bash
 gh issue comment 1 --body "$(cat <<'EOF'
-## Iteration Update - $(date +%Y-%m-%d\ %H:%M)
+## 🔄 Iteration Update - $(date +%Y-%m-%d\ %H:%M)
 
-### Completed
-- What was done this iteration
+### ✅ Completed
+- 📝 What was done this iteration
+- 🔧 Specific changes made
 
-### Current State
-- Build status: ✅/❌
-- Tests passing: X/Y
-- Binary installed: ✅/❌
-- Hook integration: ✅/❌
+### 📊 Current State
+| Component | Status |
+|-----------|--------|
+| Build | ✅ Passing / ❌ Failing |
+| Tests | 🧪 X/Y passing |
+| Binary | 📦 Installed / ⏳ Pending |
+| Hook Integration | 🔗 Connected / ⏳ Pending |
 
-### Next Priority
-- What will be tackled next iteration
+### 🎯 Next Priority
+- 🔜 What will be tackled next iteration
+- 💡 Why this is the highest priority
 
-### Metrics (if available)
-- Search latency: Xms
-- Pattern count: N
-- Success rate: X%
+### 📈 Metrics (if available)
+| Metric | Value | Target |
+|--------|-------|--------|
+| Search latency | Xms | <0.5ms |
+| Pattern count | N | - |
+| Success rate | X% | >70% |
+
+---
+*🤖 Autonomous iteration by MANA*
 EOF
 )"
 ```
+
+#### 📝 Documentation Standards
+
+When updating GitHub issues or repository documentation:
+
+1. **Use descriptive headers** with relevant emojis:
+   - 🚀 Features/Launches
+   - 🐛 Bug fixes
+   - ⚡ Performance
+   - 📚 Documentation
+   - 🔧 Configuration
+   - 🧪 Testing
+   - 🏗️ Architecture
+
+2. **Use tables** for structured data (metrics, status, comparisons)
+
+3. **Use code blocks** with language hints for syntax highlighting
+
+4. **Use collapsible sections** for verbose output:
+   ```markdown
+   <details>
+   <summary>🔍 Detailed Logs</summary>
+
+   ```
+   Log content here...
+   ```
+
+   </details>
+   ```
+
+5. **Use status indicators**:
+   - ✅ Complete/Passing
+   - ❌ Failed/Blocked
+   - ⏳ In Progress
+   - 🔜 Planned
+   - ⚠️ Warning/Attention needed
 
 ### Step 7: Create Release (if warranted)
 
