@@ -133,6 +133,12 @@ enum Commands {
         #[command(subcommand)]
         action: TeamAction,
     },
+
+    /// Pattern management and inspection
+    Patterns {
+        #[command(subcommand)]
+        action: PatternsAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -316,6 +322,52 @@ enum TeamAction {
 
     /// Print the SQL schema for Supabase tables
     SetupSchema,
+}
+
+#[derive(Subcommand)]
+enum PatternsAction {
+    /// List all patterns with filtering options
+    List {
+        /// Filter by tool type (e.g., Edit, Bash, Write)
+        #[arg(long)]
+        tool: Option<String>,
+        /// Maximum number of patterns to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+        /// Sort by: score (default), recent, uses
+        #[arg(long, default_value = "score")]
+        sort: String,
+        /// Show only patterns with score above this threshold
+        #[arg(long)]
+        min_score: Option<i64>,
+    },
+
+    /// Show detailed information about a specific pattern
+    Show {
+        /// Pattern ID to show
+        pattern_id: i64,
+    },
+
+    /// Search patterns by content
+    Search {
+        /// Search query (semantic search if embeddings available)
+        query: String,
+        /// Number of results to show
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Show pattern statistics summary
+    Summary,
+
+    /// Delete a specific pattern by ID
+    Delete {
+        /// Pattern ID to delete
+        pattern_id: i64,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Main entry point - uses sync main for inject command to avoid tokio overhead
@@ -1125,6 +1177,286 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                     println!("Run this SQL in your Supabase SQL editor:");
                     println!();
                     println!("{}", sync::get_schema_sql());
+                }
+            }
+        }
+        Commands::Patterns { action } => {
+            let mana_dir = get_mana_dir()?;
+            let db_path = mana_dir.join("metadata.sqlite");
+
+            match action {
+                PatternsAction::List { tool, limit, sort, min_score } => {
+                    let conn = rusqlite::Connection::open(&db_path)?;
+
+                    // Build query based on filters
+                    let order_by = match sort.as_str() {
+                        "recent" => "p.id DESC",
+                        "uses" => "(p.success_count + p.failure_count) DESC",
+                        _ => "(p.success_count - p.failure_count) DESC", // score
+                    };
+
+                    let tool_filter = tool.as_ref().map(|t| format!("AND p.tool_type = '{}'", t)).unwrap_or_default();
+                    let score_filter = min_score.map(|s| format!("AND (p.success_count - p.failure_count) >= {}", s)).unwrap_or_default();
+
+                    let query = format!(
+                        "SELECT p.id, p.tool_type, p.context_query,
+                                p.success_count, p.failure_count,
+                                (p.success_count - p.failure_count) as score
+                         FROM patterns p
+                         WHERE 1=1 {} {}
+                         ORDER BY {}
+                         LIMIT ?",
+                        tool_filter, score_filter, order_by
+                    );
+
+                    let mut stmt = conn.prepare(&query)?;
+                    let patterns: Vec<(i64, String, String, i64, i64, i64)> = stmt
+                        .query_map([limit as i64], |row| {
+                            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+                        })?
+                        .filter_map(|r| r.ok())
+                        .collect();
+
+                    println!("Patterns ({})", patterns.len());
+                    println!("{}", "=".repeat(50));
+                    println!();
+
+                    if patterns.is_empty() {
+                        println!("No patterns found matching filters.");
+                    } else {
+                        for (id, tool_type, context, success, failure, score) in patterns {
+                            let rate = if success + failure > 0 {
+                                (success as f64 / (success + failure) as f64) * 100.0
+                            } else {
+                                0.0
+                            };
+
+                            // Truncate context for display
+                            let context_display = if context.len() > 60 {
+                                format!("{}...", &context[..57])
+                            } else {
+                                context
+                            };
+
+                            println!("#{} [{}] score:{} ({:.0}%)", id, tool_type, score, rate);
+                            println!("   {}", context_display);
+                            println!();
+                        }
+                    }
+                }
+                PatternsAction::Show { pattern_id } => {
+                    let conn = rusqlite::Connection::open(&db_path)?;
+
+                    let result: Option<(String, String, i64, i64, Option<Vec<u8>>)> = conn
+                        .query_row(
+                            "SELECT tool_type, context_query, success_count, failure_count, embedding
+                             FROM patterns WHERE id = ?1",
+                            [pattern_id],
+                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                        )
+                        .ok();
+
+                    match result {
+                        Some((tool_type, context, success, failure, embedding)) => {
+                            let score = success - failure;
+                            let rate = if success + failure > 0 {
+                                (success as f64 / (success + failure) as f64) * 100.0
+                            } else {
+                                0.0
+                            };
+
+                            println!("Pattern #{}", pattern_id);
+                            println!("{}", "=".repeat(30));
+                            println!();
+                            println!("Tool type: {}", tool_type);
+                            println!("Score: {} ({:.0}% success rate)", score, rate);
+                            println!("Uses: {} success, {} failure", success, failure);
+                            println!("Has embedding: {}", if embedding.is_some() { "✅" } else { "❌" });
+                            println!();
+                            println!("Context:");
+                            println!("{}", context);
+
+                            // Get reflection stats if available
+                            let stats = reflection::MemoryDistiller::get_pattern_stats(&conn, pattern_id);
+                            if let Ok(stats) = stats {
+                                if stats.total > 0 {
+                                    println!();
+                                    println!("Reflection history:");
+                                    println!("  Verdicts: {}", stats.total);
+                                    println!("  Effective: {} ({:.0}%)", stats.effective, stats.effectiveness_ratio() * 100.0);
+                                    println!("  Harmful: {} ({:.0}%)", stats.harmful, stats.harm_ratio() * 100.0);
+                                }
+                            }
+                        }
+                        None => {
+                            println!("Pattern #{} not found.", pattern_id);
+                        }
+                    }
+                }
+                PatternsAction::Search { query, limit } => {
+                    // Try semantic search first, fall back to text search
+                    if embeddings::is_available(&mana_dir) {
+                        match embeddings::search(&mana_dir, &query, limit) {
+                            Ok(results) => {
+                                println!("Semantic Search Results for: \"{}\"", query);
+                                println!("{}", "=".repeat(50));
+                                println!();
+
+                                if results.is_empty() {
+                                    println!("No matching patterns found.");
+                                } else {
+                                    let conn = rusqlite::Connection::open(&db_path)?;
+
+                                    for (pattern_id, similarity) in results {
+                                        if let Ok((tool_type, context, success, failure)) = conn.query_row::<(String, String, i64, i64), _, _>(
+                                            "SELECT tool_type, context_query, success_count, failure_count FROM patterns WHERE id = ?1",
+                                            [pattern_id],
+                                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                                        ) {
+                                            let score = success - failure;
+                                            let context_display = if context.len() > 50 {
+                                                format!("{}...", &context[..47])
+                                            } else {
+                                                context
+                                            };
+                                            println!("#{} [{}] similarity:{:.2} score:{}", pattern_id, tool_type, similarity, score);
+                                            println!("   {}", context_display);
+                                            println!();
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                println!("Semantic search failed: {}", e);
+                                println!("Falling back to text search...");
+                            }
+                        }
+                    } else {
+                        // Text-based search fallback
+                        let conn = rusqlite::Connection::open(&db_path)?;
+                        let search_pattern = format!("%{}%", query);
+
+                        let mut stmt = conn.prepare(
+                            "SELECT id, tool_type, context_query, success_count, failure_count
+                             FROM patterns
+                             WHERE context_query LIKE ?1
+                             ORDER BY (success_count - failure_count) DESC
+                             LIMIT ?2"
+                        )?;
+
+                        let results: Vec<(i64, String, String, i64, i64)> = stmt
+                            .query_map(rusqlite::params![search_pattern, limit as i64], |row| {
+                                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                            })?
+                            .filter_map(|r| r.ok())
+                            .collect();
+
+                        println!("Text Search Results for: \"{}\"", query);
+                        println!("{}", "=".repeat(50));
+                        println!();
+
+                        if results.is_empty() {
+                            println!("No matching patterns found.");
+                        } else {
+                            for (id, tool_type, context, success, failure) in results {
+                                let score = success - failure;
+                                let context_display = if context.len() > 50 {
+                                    format!("{}...", &context[..47])
+                                } else {
+                                    context
+                                };
+                                println!("#{} [{}] score:{}", id, tool_type, score);
+                                println!("   {}", context_display);
+                                println!();
+                            }
+                        }
+                    }
+                }
+                PatternsAction::Summary => {
+                    let conn = rusqlite::Connection::open(&db_path)?;
+
+                    // Get overall stats
+                    let total: i64 = conn.query_row("SELECT COUNT(*) FROM patterns", [], |row| row.get(0))?;
+                    let total_success: i64 = conn.query_row("SELECT COALESCE(SUM(success_count), 0) FROM patterns", [], |row| row.get(0))?;
+                    let total_failure: i64 = conn.query_row("SELECT COALESCE(SUM(failure_count), 0) FROM patterns", [], |row| row.get(0))?;
+                    let with_embedding: i64 = conn.query_row("SELECT COUNT(*) FROM patterns WHERE embedding IS NOT NULL", [], |row| row.get(0))?;
+
+                    // Get stats by tool type
+                    let mut stmt = conn.prepare(
+                        "SELECT tool_type, COUNT(*), SUM(success_count), SUM(failure_count)
+                         FROM patterns GROUP BY tool_type ORDER BY COUNT(*) DESC"
+                    )?;
+
+                    let by_tool: Vec<(String, i64, i64, i64)> = stmt
+                        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+                        .filter_map(|r| r.ok())
+                        .collect();
+
+                    println!("Pattern Summary");
+                    println!("{}", "=".repeat(40));
+                    println!();
+                    println!("Total patterns: {}", total);
+                    println!("Total uses: {} ({} success, {} failure)", total_success + total_failure, total_success, total_failure);
+                    if total_success + total_failure > 0 {
+                        println!("Overall success rate: {:.1}%", (total_success as f64 / (total_success + total_failure) as f64) * 100.0);
+                    }
+                    println!("With embeddings: {} ({:.0}%)", with_embedding, if total > 0 { (with_embedding as f64 / total as f64) * 100.0 } else { 0.0 });
+                    println!();
+
+                    println!("By Tool Type:");
+                    for (tool_type, count, success, failure) in by_tool {
+                        let rate = if success + failure > 0 {
+                            (success as f64 / (success + failure) as f64) * 100.0
+                        } else {
+                            0.0
+                        };
+                        println!("  {}: {} patterns ({:.0}% success)", tool_type, count, rate);
+                    }
+                }
+                PatternsAction::Delete { pattern_id, force } => {
+                    let conn = rusqlite::Connection::open(&db_path)?;
+
+                    // Check if pattern exists
+                    let exists: bool = conn
+                        .query_row("SELECT 1 FROM patterns WHERE id = ?1", [pattern_id], |_| Ok(true))
+                        .unwrap_or(false);
+
+                    if !exists {
+                        println!("Pattern #{} not found.", pattern_id);
+                        return Ok(());
+                    }
+
+                    if !force {
+                        // Show pattern info and ask for confirmation
+                        let (tool_type, context): (String, String) = conn.query_row(
+                            "SELECT tool_type, context_query FROM patterns WHERE id = ?1",
+                            [pattern_id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )?;
+
+                        let context_display = if context.len() > 50 {
+                            format!("{}...", &context[..47])
+                        } else {
+                            context
+                        };
+
+                        println!("About to delete pattern #{}:", pattern_id);
+                        println!("  Type: {}", tool_type);
+                        println!("  Context: {}", context_display);
+                        println!();
+                        println!("Use --force to confirm deletion.");
+                        return Ok(());
+                    }
+
+                    // Delete the pattern
+                    conn.execute("DELETE FROM patterns WHERE id = ?1", [pattern_id])?;
+
+                    // Also delete from vector index if available
+                    if embeddings::is_available(&mana_dir) {
+                        let _ = embeddings::delete_from_index(&mana_dir, pattern_id);
+                    }
+
+                    println!("✅ Pattern #{} deleted.", pattern_id);
                 }
             }
         }

@@ -85,6 +85,22 @@ pub struct EmbeddingStatus {
     pub index_size_bytes: u64,
 }
 
+/// Search for similar patterns using embeddings
+pub fn search(mana_dir: &Path, query: &str, k: usize) -> Result<Vec<(i64, f32)>> {
+    let store = EmbeddingStore::open(mana_dir)?;
+    store.search(query, k)
+}
+
+/// Delete a pattern from the vector index
+pub fn delete_from_index(mana_dir: &Path, pattern_id: i64) -> Result<bool> {
+    let mut store = EmbeddingStore::open(mana_dir)?;
+    let removed = store.remove_pattern(pattern_id);
+    if removed {
+        store.save_index()?;
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
