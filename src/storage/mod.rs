@@ -8,9 +8,9 @@ use rusqlite::{Connection, params};
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-mod patterns;
+pub mod patterns;
 
-pub use patterns::PatternStore;
+pub use patterns::{PatternStore, Pattern};
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {
