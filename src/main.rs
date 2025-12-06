@@ -8,6 +8,7 @@ type VerdictRow = (String, Option<i64>, String, f64, Option<String>, String);
 type PatternRow = (String, String, i64, i64, Option<Vec<u8>>);
 
 mod bench;
+mod daemon;
 mod embeddings;
 mod hooks;
 mod learning;
@@ -142,6 +143,12 @@ enum Commands {
     Patterns {
         #[command(subcommand)]
         action: PatternsAction,
+    },
+
+    /// Background daemon for faster context injection
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
     },
 }
 
@@ -326,6 +333,22 @@ enum TeamAction {
 
     /// Print the SQL schema for Supabase tables
     SetupSchema,
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Start the daemon in background
+    Start {
+        /// Run in foreground (for debugging)
+        #[arg(long)]
+        foreground: bool,
+    },
+
+    /// Stop the running daemon
+    Stop,
+
+    /// Show daemon status
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -1464,12 +1487,60 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Daemon { action } => {
+            let mana_dir = get_mana_dir()?;
+
+            match action {
+                DaemonAction::Start { foreground } => {
+                    if daemon::is_running() {
+                        println!("Daemon is already running");
+                        return Ok(());
+                    }
+
+                    if foreground {
+                        println!("Starting daemon in foreground...");
+                        daemon::start_daemon(&mana_dir)?;
+                    } else {
+                        // Fork to background
+                        println!("Starting daemon in background...");
+
+                        // Use nohup-style background execution
+                        let exe = std::env::current_exe()?;
+                        let child = std::process::Command::new(&exe)
+                            .arg("daemon")
+                            .arg("start")
+                            .arg("--foreground")
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn()?;
+
+                        println!("Daemon started with PID {}", child.id());
+                        println!("Socket: {:?}", daemon::socket_path());
+                    }
+                }
+                DaemonAction::Stop => {
+                    if !daemon::is_running() {
+                        println!("Daemon is not running");
+                        return Ok(());
+                    }
+
+                    println!("Stopping daemon...");
+                    daemon::stop_daemon()?;
+                    println!("Daemon stopped");
+                }
+                DaemonAction::Status => {
+                    let status = daemon::daemon_status();
+                    println!("Daemon Status: {}", status);
+                }
+            }
+        }
     }
 
     Ok(())
 }
 
-fn get_mana_dir() -> Result<std::path::PathBuf> {
+pub fn get_mana_dir() -> Result<std::path::PathBuf> {
     // Check for .mana directory in current project first
     let cwd = std::env::current_dir()?;
     let project_mana = cwd.join(".mana");

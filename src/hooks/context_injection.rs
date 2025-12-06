@@ -69,6 +69,9 @@ const MIN_TECH_STACK_SIMILARITY: f64 = 0.35;
 ///
 /// Reads JSON from stdin, queries for relevant patterns, outputs context to stdout.
 /// This is intentionally synchronous to avoid tokio runtime initialization overhead.
+///
+/// If the MANA daemon is running, uses it for faster response (keeps state in memory).
+/// Falls back to direct database access if daemon is not available.
 pub fn inject_context(tool: &str) -> Result<()> {
     let start = Instant::now();
     debug!("Injecting context for tool: {}", tool);
@@ -83,6 +86,24 @@ pub fn inject_context(tool: &str) -> Result<()> {
     if input.is_empty() {
         debug!("No input received, skipping context injection");
         return Ok(());
+    }
+
+    // Try daemon first (faster path - keeps state in memory)
+    if crate::daemon::is_running() {
+        debug!("Daemon is running, using daemon path");
+        match crate::daemon::inject_via_daemon(tool, &input) {
+            Ok(result) => {
+                // Daemon returns the full output (context + input)
+                print!("{}", result);
+                io::stdout().flush()?;
+                debug!("Daemon injection complete in {}ms", start.elapsed().as_millis());
+                return Ok(());
+            }
+            Err(e) => {
+                warn!("Daemon injection failed: {}, falling back to direct", e);
+                // Fall through to direct path
+            }
+        }
     }
 
     // Parse hook input

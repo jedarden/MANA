@@ -41,6 +41,9 @@ thiserror = "1"
 # File system utilities
 dirs = "5"
 
+# Signal handling for daemon
+ctrlc = "3.4"
+
 # Sync module dependencies
 regex = "1"
 toml = "0.8"
