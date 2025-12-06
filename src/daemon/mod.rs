@@ -424,13 +424,11 @@ pub fn is_running() -> bool {
         Ok(mut stream) => {
             // Send ping
             let req = serde_json::json!({"command": "ping"});
-            if writeln!(stream, "{}", req).is_ok() {
-                if stream.flush().is_ok() {
-                    let mut reader = BufReader::new(stream);
-                    let mut response = String::new();
-                    if reader.read_line(&mut response).is_ok() {
-                        return response.contains("pong");
-                    }
+            if writeln!(stream, "{}", req).is_ok() && stream.flush().is_ok() {
+                let mut reader = BufReader::new(stream);
+                let mut response = String::new();
+                if reader.read_line(&mut response).is_ok() {
+                    return response.contains("pong");
                 }
             }
             false
