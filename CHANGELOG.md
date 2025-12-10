@@ -2,6 +2,87 @@
 
 All notable changes to MANA will be documented in this file.
 
+## [0.5.0] - 2025-12-10
+
+### Added - Comprehensive RL Algorithm Suite
+
+#### Reflexion Memory (Self-Critique System)
+- **Learning from Failures**: Store reflections on what went wrong and why
+- **FTS Search**: Full-text search across reflection content
+- **Validation Tracking**: Monitor which reflections improved outcomes
+- **Confidence Scoring**: Track reliability of reflections over time
+
+#### 8 New Reinforcement Learning Algorithms
+
+1. **SARSA** (State-Action-Reward-State-Action)
+   - On-policy TD learning using actual next action
+   - Safer exploration compared to Q-learning
+   - Eligibility traces support
+
+2. **DQN** (Deep Q-Network)
+   - Experience replay buffer for stable learning
+   - Target network with periodic updates
+   - Linear function approximation (no external ML dependencies)
+
+3. **Policy Gradient** (REINFORCE)
+   - Direct policy optimization
+   - Baseline subtraction for variance reduction
+   - Entropy bonus for exploration
+
+4. **Actor-Critic**
+   - Combined value (critic) and policy (actor) learning
+   - N-step returns for bias/variance tradeoff
+   - Lower variance than pure policy gradient
+
+5. **PPO** (Proximal Policy Optimization)
+   - Clipped surrogate objective for stability
+   - Generalized Advantage Estimation (GAE)
+   - Sample efficient and stable training
+
+6. **Decision Transformer**
+   - Sequence modeling approach to RL
+   - Return-conditioned generation
+   - Attention-based architecture simulation
+
+7. **MCTS** (Monte Carlo Tree Search)
+   - UCB1 selection for exploration/exploitation balance
+   - Configurable rollout depth and simulations
+   - Tree persistence across episodes
+   - Fixed: Selection phase depth limiting for reliable performance
+
+8. **Model-Based RL**
+   - Learn dynamics and reward models from experience
+   - Model Predictive Control (MPC) planning
+   - Cross-Entropy Method (CEM) optimization
+   - High sample efficiency
+
+### RL Algorithm Comparison
+
+| Algorithm | Policy | Sample Efficiency | Stability | Best For |
+|-----------|--------|-------------------|-----------|----------|
+| Q-Learning | Off-policy | Medium | High | Simple MDPs |
+| SARSA | On-policy | Medium | High | Safe exploration |
+| DQN | Off-policy | High | Medium | Large state spaces |
+| Policy Gradient | On-policy | Low | Low | Continuous actions |
+| Actor-Critic | On-policy | Medium | Medium | General purpose |
+| PPO | On-policy | High | High | Most tasks |
+| Decision Transformer | Offline | High | High | Offline RL |
+| MCTS | Planning | N/A | High | Known dynamics |
+| Model-Based | Off-policy | Very High | Medium | Limited samples |
+
+### Feature Gap Closure (vs AgentDB)
+
+| Feature | MANA v0.4.0 | MANA v0.5.0 | AgentDB |
+|---------|-------------|-------------|---------|
+| RL Algorithms | 1 (Q-learning) | **9 algorithms** | 9 algorithms |
+| Reflexion Memory | ❌ | ✅ | ✅ |
+| Self-Critique | ❌ | ✅ | ✅ |
+
+### Changed
+- Bump version to 0.5.0
+- Extended learning module with 8 new RL algorithms
+- Added reflexion module for self-critique learning
+
 ## [0.4.0] - 2025-12-10
 
 ### Added - Advanced AI Features (Closing AgentDB Gap)
