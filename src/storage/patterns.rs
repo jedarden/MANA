@@ -65,8 +65,15 @@ impl PatternStore {
     }
 
     /// Open pattern store with mmap enabled (for latency-sensitive hot paths)
-    /// Use this when the connection will be reused many times
-    #[allow(dead_code)]
+    /// Use this when the connection will be reused many times (e.g., daemon mode)
+    ///
+    /// Performance characteristics:
+    /// - mmap_size=8MB: Maps DB to memory, avoids syscalls for reads
+    /// - cache_size=4000 pages: ~16MB cache for hot data
+    /// - temp_store=MEMORY: Keeps temp tables in RAM
+    /// - prepared_statement_cache=16: Caches compiled SQL
+    ///
+    /// Inspired by AgentDB's RuVector caching strategy
     pub fn open_readonly_with_mmap(db_path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(
             db_path,
@@ -75,9 +82,46 @@ impl PatternStore {
         )?;
 
         // Enable mmap for repeated queries (amortizes setup cost)
-        conn.pragma_update(None, "mmap_size", 2_097_152)?; // 2MB
+        // 8MB is enough for most pattern databases (<10K patterns)
+        conn.pragma_update(None, "mmap_size", 8_388_608)?; // 8MB
 
-        conn.set_prepared_statement_cache_capacity(8);
+        // Increase page cache for hot data
+        conn.pragma_update(None, "cache_size", 4000)?; // ~16MB
+
+        // Keep temp tables in memory
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+
+        // Larger prepared statement cache for hot paths
+        conn.set_prepared_statement_cache_capacity(16);
+
+        Ok(Self { conn })
+    }
+
+    /// Open pattern store optimized for maximum read performance
+    /// Use this for benchmarking or daemon mode where startup cost is amortized
+    #[allow(dead_code)]
+    pub fn open_hot(db_path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | rusqlite::OpenFlags::SQLITE_OPEN_SHARED_CACHE,
+        )?;
+
+        // Maximum mmap for memory-mapped I/O
+        conn.pragma_update(None, "mmap_size", 30_000_000)?; // 30MB
+
+        // Large cache
+        conn.pragma_update(None, "cache_size", 8000)?; // ~32MB
+
+        // Memory temp store
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+
+        // Disable locking for read-only
+        conn.pragma_update(None, "locking_mode", "NORMAL")?;
+
+        // Maximum prepared statement cache
+        conn.set_prepared_statement_cache_capacity(32);
 
         Ok(Self { conn })
     }

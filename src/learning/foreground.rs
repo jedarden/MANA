@@ -2,6 +2,8 @@
 //!
 //! Runs synchronously after session-end when threshold is reached.
 //! Latency budget: <1 second.
+//!
+//! Supports automatic embedding generation for vector search retrieval.
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -10,15 +12,23 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::trajectory::{parse_trajectories, Trajectory};
 use super::LearningResult;
 use crate::storage::{PatternStore, Pattern, CausalStore};
 use crate::hooks::session_end_handler::AccumulatorState;
+use crate::embeddings::{EmbeddingStore, EmbeddingConfig};
 
 /// Maximum patterns to extract per trajectory (ReasoningBank constraint)
 const MAX_PATTERNS_PER_TRAJECTORY: usize = 3;
+
+/// Whether to automatically generate embeddings for new patterns
+/// This enables vector search retrieval in the context injection pipeline
+const AUTO_GENERATE_EMBEDDINGS: bool = true;
+
+/// Maximum patterns to embed per learning cycle (to keep latency under control)
+const MAX_PATTERNS_TO_EMBED: usize = 100;
 
 /// Run foreground learning on accumulated trajectories
 ///
@@ -141,6 +151,22 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
     let causal_edges = discover_causal_edges(&db_path, &all_trajectories)?;
     if causal_edges > 0 {
         info!("Discovered {} causal edges from co-occurrences", causal_edges);
+    }
+
+    // Auto-generate embeddings for vector search (if enabled)
+    if AUTO_GENERATE_EMBEDDINGS && result.patterns_created > 0 {
+        let embed_start = Instant::now();
+        match generate_embeddings_for_new_patterns(&mana_dir) {
+            Ok(embedded) => {
+                if embedded > 0 {
+                    info!("Generated {} embeddings for vector search in {}ms",
+                          embedded, embed_start.elapsed().as_millis());
+                }
+            }
+            Err(e) => {
+                warn!("Failed to generate embeddings: {} (vector search will use TF-IDF fallback)", e);
+            }
+        }
     }
 
     // Log learning event to database
@@ -858,6 +884,51 @@ fn log_learning_event(db_path: &Path, result: &LearningResult) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// Generate embeddings for patterns that don't have them yet
+///
+/// This enables vector search retrieval in the context injection pipeline.
+/// Runs as part of foreground learning to keep embeddings in sync with patterns.
+fn generate_embeddings_for_new_patterns(mana_dir: &Path) -> Result<usize> {
+    // Check if embedding index exists - if not, initialize it
+    let index_path = mana_dir.join("vectors.usearch");
+
+    // Open or create embedding store
+    let config = EmbeddingConfig::default();
+    let mut store = if index_path.exists() {
+        EmbeddingStore::open(mana_dir)?
+    } else {
+        EmbeddingStore::new(mana_dir, &config)?
+    };
+
+    // Check current status
+    let status = store.status()?;
+    if status.unembedded_count == 0 {
+        debug!("All patterns already have embeddings");
+        return Ok(0);
+    }
+
+    debug!("Found {} patterns without embeddings", status.unembedded_count);
+
+    // Generate embeddings for patterns that don't have them
+    // Limit to MAX_PATTERNS_TO_EMBED to keep latency under control
+    let mut embedded = 0;
+    while embedded < MAX_PATTERNS_TO_EMBED {
+        let batch_count = store.embed_missing()?;
+        if batch_count == 0 {
+            break;
+        }
+        embedded += batch_count;
+        debug!("Embedded {} patterns (total: {})", batch_count, embedded);
+    }
+
+    if embedded > 0 {
+        // Save the updated index
+        store.save_index()?;
+    }
+
+    Ok(embedded)
 }
 
 #[cfg(test)]

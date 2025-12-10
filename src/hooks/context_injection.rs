@@ -2,6 +2,10 @@
 //!
 //! Reads tool input from stdin, queries ReasoningBank for relevant patterns,
 //! and outputs context to stdout. Latency budget: <10ms.
+//!
+//! Supports hybrid search:
+//! - Vector search: Semantic similarity using embeddings (when available)
+//! - TF-IDF search: Keyword-based similarity (fallback)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -11,6 +15,7 @@ use std::time::Instant;
 use tracing::{debug, warn};
 
 use crate::storage::{PatternStore, Pattern, calculate_similarity, CausalStore};
+use crate::embeddings::EmbeddingStore;
 
 /// Top-level hook input structure from Claude Code
 #[derive(Debug, Deserialize)]
@@ -64,6 +69,13 @@ const MIN_RELEVANCE_SCORE: usize = 0;
 /// A pattern needs raw similarity of ~1.17 to pass with tech mismatch (impossible)
 /// This ensures we don't show shell patterns for Rust queries, etc.
 const MIN_TECH_STACK_SIMILARITY: f64 = 0.35;
+
+/// Minimum vector similarity score for pattern inclusion
+/// Vector similarity is typically 0.0-1.0, with 0.5+ being reasonably related
+const MIN_VECTOR_SIMILARITY: f32 = 0.4;
+
+/// Whether to prefer vector search over TF-IDF when embeddings are available
+const USE_VECTOR_SEARCH: bool = true;
 
 /// Inject context from ReasoningBank based on tool input
 ///
@@ -171,7 +183,12 @@ pub fn inject_context(tool: &str) -> Result<()> {
     Ok(())
 }
 
-/// Query patterns from the ReasoningBank
+/// Query patterns from the ReasoningBank using hybrid search
+///
+/// Search strategy:
+/// 1. If embeddings are available and query is non-empty: Use vector search
+/// 2. Fallback to TF-IDF similarity search
+/// 3. Combine with success scores for final ranking
 fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     let _query_start = Instant::now();
 
@@ -187,12 +204,6 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         });
     }
 
-    // Open pattern store in read-only mode for faster access
-    let db_open_start = Instant::now();
-    let store = PatternStore::open_readonly(&db_path)?;
-    let db_open_time = db_open_start.elapsed().as_micros();
-    debug!("DB open: {}µs", db_open_time);
-
     // Map tool argument to database tool_types - prioritize exact matches
     let primary_types: Vec<&str> = match tool {
         "edit" => vec!["Edit", "Write", "MultiEdit"],
@@ -204,10 +215,120 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         _ => vec![tool],
     };
 
+    // Try vector search first if enabled and query is not empty
+    if USE_VECTOR_SEARCH && !query.is_empty() {
+        let vector_start = Instant::now();
+        if let Ok(patterns) = query_patterns_vector(&mana_dir, &db_path, query, &primary_types) {
+            if !patterns.is_empty() {
+                debug!("Vector search returned {} patterns in {}µs",
+                       patterns.len(), vector_start.elapsed().as_micros());
+                return format_success_patterns(&patterns);
+            }
+            debug!("Vector search returned 0 patterns, falling back to TF-IDF");
+        }
+    }
+
+    // Fallback to TF-IDF search
+    query_patterns_tfidf(&db_path, query, &primary_types)
+}
+
+/// Query patterns using vector similarity search
+fn query_patterns_vector(
+    mana_dir: &PathBuf,
+    db_path: &PathBuf,
+    query: &str,
+    primary_types: &[&str],
+) -> Result<Vec<Pattern>> {
+    // Check if vector index exists
+    let index_path = mana_dir.join("vectors.usearch");
+    if !index_path.exists() {
+        debug!("No vector index found at {:?}", index_path);
+        return Ok(vec![]);
+    }
+
+    // Open embedding store
+    let embedding_store = EmbeddingStore::open(mana_dir)?;
+
+    // Check if we have embeddings
+    let status = embedding_store.status()?;
+    if status.vector_count == 0 {
+        debug!("Vector index is empty");
+        return Ok(vec![]);
+    }
+
+    // Search for similar patterns using vectors
+    let vector_matches = embedding_store.search_with_context(query, PATTERNS_TO_SCORE * 2)?;
+
+    if vector_matches.is_empty() {
+        return Ok(vec![]);
+    }
+
+    debug!("Vector search found {} raw matches", vector_matches.len());
+
+    // Filter by tool type and minimum similarity
+    let mut scored_patterns: Vec<(Pattern, f64)> = vector_matches
+        .into_iter()
+        .filter(|m| {
+            // Filter by tool type
+            let tool_match = primary_types.iter()
+                .any(|t| m.tool_type.eq_ignore_ascii_case(t));
+            // Filter by minimum similarity
+            let sim_match = m.similarity >= MIN_VECTOR_SIMILARITY;
+            tool_match && sim_match
+        })
+        .map(|m| {
+            // Convert PatternMatch to Pattern with combined score
+            let pattern = Pattern {
+                id: m.id,
+                pattern_hash: String::new(), // Not needed for display
+                tool_type: m.tool_type,
+                command_category: None,
+                context_query: m.context_query,
+                success_count: m.success_count,
+                failure_count: m.failure_count,
+                embedding_id: None,
+            };
+
+            // Combined score: 60% vector similarity, 40% success rate
+            let success_score = (m.success_count - m.failure_count) as f64;
+            let combined = (m.similarity as f64) * 0.6 + (success_score.max(0.0) / 10.0) * 0.4;
+
+            debug!("  Vector match [{}]: sim={:.3}, combined={:.3}",
+                   pattern.tool_type, m.similarity, combined);
+
+            (pattern, combined)
+        })
+        .collect();
+
+    // Sort by combined score
+    scored_patterns.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Filter causal conflicts if we have many candidates
+    if scored_patterns.len() > MAX_PATTERNS {
+        scored_patterns = filter_causal_conflicts(db_path, scored_patterns);
+    }
+
+    scored_patterns.truncate(MAX_PATTERNS);
+
+    Ok(scored_patterns.into_iter().map(|(p, _)| p).collect())
+}
+
+/// Query patterns using TF-IDF similarity search (fallback)
+fn query_patterns_tfidf(
+    db_path: &PathBuf,
+    query: &str,
+    primary_types: &[&str],
+) -> Result<ContextInjection> {
+    // Open pattern store in read-only mode for faster access
+    let db_open_start = Instant::now();
+    let store = PatternStore::open_readonly(db_path)?;
+    let db_open_time = db_open_start.elapsed().as_micros();
+    debug!("DB open: {}µs", db_open_time);
+
     // Get relevant patterns for primary tool types only
     // Retrieve more patterns than we need so similarity scoring can find the best matches
     let mut patterns: Vec<Pattern> = Vec::new();
-    for tool_type in &primary_types {
+    for tool_type in primary_types {
         let mut type_patterns = store.get_by_tool(tool_type, PATTERNS_TO_SCORE)?;
         patterns.append(&mut type_patterns);
     }
@@ -219,7 +340,7 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
 
     // Score patterns by semantic similarity if query is not empty
     if !query.is_empty() {
-        debug!("Scoring {} patterns for query: {}", patterns.len(), query);
+        debug!("TF-IDF scoring {} patterns for query: {}", patterns.len(), query);
 
         // Use TF-IDF style similarity scoring for better relevance
         // Process patterns in batches for better cache locality
@@ -249,12 +370,12 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         // Only filter causal conflicts if we have more candidates than needed
         // This avoids extra DB I/O in the common case
         if scored_patterns.len() > MAX_PATTERNS {
-            scored_patterns = filter_causal_conflicts(&db_path, scored_patterns);
+            scored_patterns = filter_causal_conflicts(db_path, scored_patterns);
         }
 
         scored_patterns.truncate(MAX_PATTERNS);
 
-        debug!("Ranked {} patterns by similarity (filtered by tech stack + causal)", scored_patterns.len());
+        debug!("Ranked {} patterns by TF-IDF similarity", scored_patterns.len());
         patterns = scored_patterns.into_iter().map(|(p, _)| p).collect();
     } else {
         patterns.truncate(MAX_PATTERNS);
@@ -263,7 +384,7 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     // If similarity filtering returned empty due to tech stack mismatch,
     // try to provide generic helpful patterns with a caveat
     if patterns.is_empty() && !query.is_empty() {
-        debug!("Similarity filtering returned 0 patterns - trying generic fallback");
+        debug!("TF-IDF filtering returned 0 patterns - trying generic fallback");
 
         // Get top patterns without tech stack filtering for generic guidance
         // These are high-quality patterns that might still be helpful
@@ -284,7 +405,7 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     }
 
     // No patterns found at all
-    debug!("No patterns found for tool type: {}", tool);
+    debug!("No patterns found");
     Ok(ContextInjection {
         context_block: String::new(),
         patterns_used: vec![],

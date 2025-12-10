@@ -8,9 +8,12 @@ use serde::{Deserialize, Serialize};
 mod foreground;
 mod consolidation;
 pub mod trajectory;
+pub mod qlearning;
 
 pub use foreground::foreground_learn;
 pub use consolidation::{consolidate, spawn_consolidation};
+#[allow(unused_imports)]
+pub use qlearning::{QLearningAgent, QLearningConfig, QLearningStats, hash_context};
 // Trajectory types are internal to foreground learning - only expose what's needed
 #[allow(unused_imports)]
 pub(crate) use trajectory::parse_trajectories;

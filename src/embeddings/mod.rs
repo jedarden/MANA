@@ -14,10 +14,16 @@ use std::path::Path;
 mod model;
 mod index;
 mod store;
+mod hnsw;
+mod quantize;
 
 pub use model::EmbeddingModel;
 pub use index::VectorIndex;
 pub use store::EmbeddingStore;
+#[allow(unused_imports)]
+pub use hnsw::{HnswIndex, HnswMatch, HnswConfig};
+#[allow(unused_imports)]
+pub use quantize::{QuantizedVector, QuantizedStore, QuantizationMethod, QuantizationConfig};
 
 /// Embedding dimensions for the default model (gte-small)
 pub const EMBEDDING_DIM: usize = 384;

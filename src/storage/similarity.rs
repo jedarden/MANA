@@ -4,16 +4,133 @@
 //! without requiring external ML libraries.
 //!
 //! Optimized for sub-millisecond performance on small pattern sets.
+//! Includes LRU cache for repeated similarity calculations (inspired by AgentDB).
 
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 
+/// LRU cache for similarity calculations
+/// Key: hash of (query, pattern) pair, Value: similarity score
+/// Using a simple bounded HashMap with eviction for speed
+const CACHE_SIZE: usize = 1024;
+
+struct SimilarityCache {
+    entries: HashMap<u64, (f64, u64)>, // hash -> (score, access_count)
+    access_counter: u64,
+}
+
+impl SimilarityCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::with_capacity(CACHE_SIZE),
+            access_counter: 0,
+        }
+    }
+
+    fn get(&mut self, key: u64) -> Option<f64> {
+        if let Some((score, access)) = self.entries.get_mut(&key) {
+            self.access_counter += 1;
+            *access = self.access_counter;
+            Some(*score)
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, key: u64, score: f64) {
+        self.access_counter += 1;
+
+        // Evict oldest entries if cache is full
+        if self.entries.len() >= CACHE_SIZE {
+            // Find entry with lowest access count
+            if let Some((&oldest_key, _)) = self.entries.iter()
+                .min_by_key(|(_, (_, access))| *access)
+            {
+                self.entries.remove(&oldest_key);
+            }
+        }
+
+        self.entries.insert(key, (score, self.access_counter));
+    }
+}
+
+lazy_static::lazy_static! {
+    static ref SIMILARITY_CACHE: Mutex<SimilarityCache> = Mutex::new(SimilarityCache::new());
+}
+
+/// Compute a hash key for a query-pattern pair
+#[inline]
+fn cache_key(query: &str, pattern: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    // Use shorter string first for consistent ordering
+    if query.len() <= pattern.len() {
+        query.hash(&mut hasher);
+        pattern.hash(&mut hasher);
+    } else {
+        pattern.hash(&mut hasher);
+        query.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Calculate similarity with LRU cache for repeated queries
+/// This is the main entry point - uses cache when available
+#[inline]
+pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
+    // Fast path: skip cache for very short strings (cache overhead not worth it)
+    if query.len() < 20 || pattern_text.len() < 20 {
+        return calculate_similarity_impl(query, pattern_text);
+    }
+
+    let key = cache_key(query, pattern_text);
+
+    // Try cache first
+    if let Ok(mut cache) = SIMILARITY_CACHE.try_lock() {
+        if let Some(score) = cache.get(key) {
+            return score;
+        }
+    }
+
+    // Cache miss - calculate similarity
+    let score = calculate_similarity_impl(query, pattern_text);
+
+    // Store in cache (best effort, don't block if lock is held)
+    if let Ok(mut cache) = SIMILARITY_CACHE.try_lock() {
+        cache.insert(key, score);
+    }
+
+    score
+}
+
+/// Clear the similarity cache (useful for testing or after major updates)
+#[allow(dead_code)]
+pub fn clear_cache() {
+    if let Ok(mut cache) = SIMILARITY_CACHE.lock() {
+        cache.entries.clear();
+        cache.access_counter = 0;
+    }
+}
+
+/// Get cache statistics for monitoring
+#[allow(dead_code)]
+pub fn cache_stats() -> (usize, u64) {
+    if let Ok(cache) = SIMILARITY_CACHE.lock() {
+        (cache.entries.len(), cache.access_counter)
+    } else {
+        (0, 0)
+    }
+}
+
+/// Internal similarity calculation (cache-free)
 /// Calculate similarity between query and patterns using TF-IDF-like scoring
 /// Returns a score between 0.0 and 1.0
 /// Returns a penalty (low score multiplier) for tech stack mismatches
 ///
 /// Optimized for sub-millisecond performance with early exits and reduced allocations
 #[inline]
-pub fn calculate_similarity(query: &str, pattern_text: &str) -> f64 {
+fn calculate_similarity_impl(query: &str, pattern_text: &str) -> f64 {
     // Fast path: skip empty inputs
     if query.is_empty() || pattern_text.is_empty() {
         return 0.0;

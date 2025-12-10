@@ -1,6 +1,6 @@
 [package]
 name = "mana"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["MANA Autonomous Agent"]
 description = "Memory-Augmented Neural Assistant - High-performance learning system for Claude Code"
@@ -43,6 +43,12 @@ dirs = "5"
 
 # Signal handling for daemon
 ctrlc = "3.4"
+
+# Lazy initialization for caching
+lazy_static = "1.4"
+
+# HNSW for fast approximate nearest neighbor search
+instant-distance = "0.6"
 
 # Sync module dependencies
 regex = "1"

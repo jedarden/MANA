@@ -1,7 +1,13 @@
-//! Skill storage and consolidation
+//! Skill storage and consolidation (enhanced with AgentDB-inspired features)
 //!
 //! Skills are higher-level abstractions over patterns. They group
 //! similar patterns together with aggregated success rates.
+//!
+//! Enhanced features (inspired by AgentDB):
+//! - Skill composition chains: Track skill->skill dependencies
+//! - Usage tracking: How often skills are recommended vs. actually used
+//! - Skill discovery: Find trending and effective skills
+//! - Auto-consolidation: Automatically promote successful episodes to skills
 //!
 //! Example:
 //!   Patterns:
@@ -47,6 +53,34 @@ pub struct Skill {
     pub tool_type: String,
     /// Command category (rs, npm, git, etc.)
     pub command_category: Option<String>,
+    /// Usage tracking: times this skill was recommended
+    #[serde(default)]
+    pub times_recommended: i64,
+    /// Usage tracking: times this skill was actually used after recommendation
+    #[serde(default)]
+    pub times_used: i64,
+}
+
+/// Skill composition chain: tracks skill->skill dependencies
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillChain {
+    pub id: i64,
+    pub from_skill_id: i64,
+    pub to_skill_id: i64,
+    /// How often these skills are used together successfully
+    pub co_applications: i64,
+    /// Success rate when used in sequence
+    pub success_rate: f64,
+}
+
+/// Usage statistics for a skill
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct SkillUsageStats {
+    pub times_recommended: i64,
+    pub times_used: i64,
+    pub usage_rate: f64,
+    pub effectiveness: f64,
 }
 
 impl Skill {
@@ -65,6 +99,25 @@ impl Skill {
     #[allow(dead_code)]
     pub fn score(&self) -> i64 {
         self.total_success - self.total_failure
+    }
+
+    /// Calculate usage rate (how often skill is used when recommended)
+    #[allow(dead_code)]
+    pub fn usage_rate(&self) -> f64 {
+        if self.times_recommended > 0 {
+            (self.times_used as f64 / self.times_recommended as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate effectiveness score (combines success rate and usage rate)
+    #[allow(dead_code)]
+    pub fn effectiveness(&self) -> f64 {
+        let success = self.success_rate() / 100.0;
+        let usage = self.usage_rate() / 100.0;
+        // Weighted combination: 70% success rate, 30% usage rate
+        (success * 0.7 + usage * 0.3) * 100.0
     }
 }
 
@@ -85,6 +138,12 @@ impl SkillStore {
             |row| Ok(row.get::<_, i64>(0)? > 0),
         ).unwrap_or(false);
 
+        let has_usage_tracking: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name = 'times_recommended'",
+            [],
+            |row| Ok(row.get::<_, i64>(0)? > 0),
+        ).unwrap_or(false);
+
         if !has_tool_type {
             // Drop and recreate skills table with new schema
             conn.execute_batch(
@@ -101,15 +160,47 @@ impl SkillStore {
                     pattern_count INTEGER DEFAULT 0,
                     tool_type TEXT,
                     command_category TEXT,
+                    times_recommended INTEGER DEFAULT 0,
+                    times_used INTEGER DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_skills_tool_type ON skills(tool_type);
                 CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(command_category);
+                CREATE INDEX IF NOT EXISTS idx_skills_effectiveness ON skills((total_success - total_failure) DESC);
+                "#,
+            )?;
+        } else if !has_usage_tracking {
+            // Migrate: add usage tracking columns
+            conn.execute_batch(
+                r#"
+                ALTER TABLE skills ADD COLUMN times_recommended INTEGER DEFAULT 0;
+                ALTER TABLE skills ADD COLUMN times_used INTEGER DEFAULT 0;
                 "#,
             )?;
         }
+
+        // Create skill_chains table for composition tracking
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS skill_chains (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_skill_id INTEGER NOT NULL,
+                to_skill_id INTEGER NOT NULL,
+                co_applications INTEGER DEFAULT 1,
+                success_rate REAL DEFAULT 0.0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(from_skill_id, to_skill_id),
+                FOREIGN KEY (from_skill_id) REFERENCES skills(id) ON DELETE CASCADE,
+                FOREIGN KEY (to_skill_id) REFERENCES skills(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_skill_chains_from ON skill_chains(from_skill_id);
+            CREATE INDEX IF NOT EXISTS idx_skill_chains_to ON skill_chains(to_skill_id);
+            "#,
+        )?;
 
         Ok(Self { conn })
     }
@@ -158,7 +249,8 @@ impl SkillStore {
     pub fn get_by_tool(&self, tool_type: &str, limit: usize) -> Result<Vec<Skill>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, name, description, pattern_ids, total_success, total_failure, pattern_count, tool_type, command_category
+            SELECT id, name, description, pattern_ids, total_success, total_failure, pattern_count,
+                   tool_type, command_category, COALESCE(times_recommended, 0), COALESCE(times_used, 0)
             FROM skills
             WHERE tool_type = ?1
             ORDER BY (total_success - total_failure) DESC
@@ -166,20 +258,7 @@ impl SkillStore {
             "#,
         )?;
 
-        let skills = stmt.query_map(params![tool_type, limit as i64], |row| {
-            Ok(Skill {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                pattern_ids: row.get(3)?,
-                total_success: row.get(4)?,
-                total_failure: row.get(5)?,
-                pattern_count: row.get(6)?,
-                tool_type: row.get(7)?,
-                command_category: row.get(8)?,
-            })
-        })?;
-
+        let skills = stmt.query_map(params![tool_type, limit as i64], Self::row_to_skill)?;
         skills.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -188,28 +267,33 @@ impl SkillStore {
     pub fn get_all(&self, limit: usize) -> Result<Vec<Skill>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, name, description, pattern_ids, total_success, total_failure, pattern_count, tool_type, command_category
+            SELECT id, name, description, pattern_ids, total_success, total_failure, pattern_count,
+                   tool_type, command_category, COALESCE(times_recommended, 0), COALESCE(times_used, 0)
             FROM skills
             ORDER BY (total_success - total_failure) DESC
             LIMIT ?1
             "#,
         )?;
 
-        let skills = stmt.query_map(params![limit as i64], |row| {
-            Ok(Skill {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                pattern_ids: row.get(3)?,
-                total_success: row.get(4)?,
-                total_failure: row.get(5)?,
-                pattern_count: row.get(6)?,
-                tool_type: row.get(7)?,
-                command_category: row.get(8)?,
-            })
-        })?;
-
+        let skills = stmt.query_map(params![limit as i64], Self::row_to_skill)?;
         skills.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Helper to convert a row to a Skill
+    fn row_to_skill(row: &rusqlite::Row) -> rusqlite::Result<Skill> {
+        Ok(Skill {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            pattern_ids: row.get(3)?,
+            total_success: row.get(4)?,
+            total_failure: row.get(5)?,
+            pattern_count: row.get(6)?,
+            tool_type: row.get(7)?,
+            command_category: row.get(8)?,
+            times_recommended: row.get(9)?,
+            times_used: row.get(10)?,
+        })
     }
 
     /// Get skill count
@@ -230,6 +314,258 @@ impl SkillStore {
     pub fn clear(&self) -> Result<()> {
         self.conn.execute("DELETE FROM skills", [])?;
         Ok(())
+    }
+
+    // ========== AgentDB-inspired skill discovery and tracking methods ==========
+
+    /// Record that a skill was recommended (for usage tracking)
+    #[allow(dead_code)]
+    pub fn record_recommendation(&self, skill_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE skills SET times_recommended = times_recommended + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            params![skill_id]
+        )?;
+        Ok(())
+    }
+
+    /// Record that a skill was actually used after being recommended
+    #[allow(dead_code)]
+    pub fn record_usage(&self, skill_id: i64, success: bool) -> Result<()> {
+        if success {
+            self.conn.execute(
+                "UPDATE skills SET times_used = times_used + 1, total_success = total_success + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                params![skill_id]
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE skills SET times_used = times_used + 1, total_failure = total_failure + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                params![skill_id]
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Get trending skills (most recommended/used in recent period)
+    #[allow(dead_code)]
+    pub fn get_trending(&self, hours: i64, limit: usize) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, name, description, pattern_ids, total_success, total_failure, pattern_count,
+                   tool_type, command_category, COALESCE(times_recommended, 0), COALESCE(times_used, 0)
+            FROM skills
+            WHERE updated_at > datetime('now', ? || ' hours')
+            ORDER BY (times_recommended + times_used) DESC, (total_success - total_failure) DESC
+            LIMIT ?
+            "#,
+        )?;
+
+        let hours_str = format!("-{}", hours);
+        let skills = stmt.query_map(params![hours_str, limit as i64], Self::row_to_skill)?;
+        skills.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get most effective skills (high success rate + high usage)
+    #[allow(dead_code)]
+    pub fn get_most_effective(&self, min_uses: i64, limit: usize) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, name, description, pattern_ids, total_success, total_failure, pattern_count,
+                   tool_type, command_category, COALESCE(times_recommended, 0), COALESCE(times_used, 0)
+            FROM skills
+            WHERE (total_success + total_failure) >= ?
+            ORDER BY (CAST(total_success AS REAL) / NULLIF(total_success + total_failure, 0)) DESC,
+                     (total_success - total_failure) DESC
+            LIMIT ?
+            "#,
+        )?;
+
+        let skills = stmt.query_map(params![min_uses, limit as i64], Self::row_to_skill)?;
+        skills.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Search skills by semantic similarity (uses pattern matching on name/description)
+    #[allow(dead_code)]
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT id, name, description, pattern_ids, total_success, total_failure, pattern_count,
+                   tool_type, command_category, COALESCE(times_recommended, 0), COALESCE(times_used, 0)
+            FROM skills
+            ORDER BY (total_success - total_failure) DESC
+            LIMIT 100
+            "#,
+        )?;
+
+        let all_skills: Vec<Skill> = stmt.query_map([], Self::row_to_skill)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Score skills by similarity to query
+        let mut scored: Vec<(Skill, f64)> = all_skills
+            .into_iter()
+            .map(|s| {
+                let name_sim = calculate_similarity(query, &s.name);
+                let desc_sim = calculate_similarity(query, &s.description);
+                let score = name_sim.max(desc_sim);
+                (s, score)
+            })
+            .filter(|(_, score)| *score > 0.2)
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        Ok(scored.into_iter().map(|(s, _)| s).collect())
+    }
+
+    /// Get usage statistics for a skill
+    #[allow(dead_code)]
+    pub fn get_usage_stats(&self, skill_id: i64) -> Result<SkillUsageStats> {
+        let (times_recommended, times_used, total_success, total_failure): (i64, i64, i64, i64) =
+            self.conn.query_row(
+                "SELECT COALESCE(times_recommended, 0), COALESCE(times_used, 0), total_success, total_failure FROM skills WHERE id = ?",
+                params![skill_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            )?;
+
+        let usage_rate = if times_recommended > 0 {
+            times_used as f64 / times_recommended as f64
+        } else {
+            0.0
+        };
+
+        let total = total_success + total_failure;
+        let effectiveness = if total > 0 {
+            total_success as f64 / total as f64
+        } else {
+            0.5
+        };
+
+        Ok(SkillUsageStats {
+            times_recommended,
+            times_used,
+            usage_rate,
+            effectiveness,
+        })
+    }
+
+    // ========== Skill composition chain methods ==========
+
+    /// Record a skill chain (skill A followed by skill B)
+    #[allow(dead_code)]
+    pub fn record_chain(&self, from_skill_id: i64, to_skill_id: i64, success: bool) -> Result<()> {
+        // Try to update existing chain
+        let updated = self.conn.execute(
+            r#"
+            UPDATE skill_chains
+            SET co_applications = co_applications + 1,
+                success_rate = (success_rate * co_applications + ?) / (co_applications + 1),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE from_skill_id = ? AND to_skill_id = ?
+            "#,
+            params![if success { 1.0 } else { 0.0 }, from_skill_id, to_skill_id]
+        )?;
+
+        if updated == 0 {
+            // Insert new chain
+            self.conn.execute(
+                r#"
+                INSERT INTO skill_chains (from_skill_id, to_skill_id, co_applications, success_rate)
+                VALUES (?, ?, 1, ?)
+                "#,
+                params![from_skill_id, to_skill_id, if success { 1.0 } else { 0.0 }]
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Get skills that commonly follow a given skill
+    #[allow(dead_code)]
+    pub fn get_follow_up_skills(&self, skill_id: i64, limit: usize) -> Result<Vec<(Skill, SkillChain)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT s.id, s.name, s.description, s.pattern_ids, s.total_success, s.total_failure,
+                   s.pattern_count, s.tool_type, s.command_category,
+                   COALESCE(s.times_recommended, 0), COALESCE(s.times_used, 0),
+                   c.id, c.from_skill_id, c.to_skill_id, c.co_applications, c.success_rate
+            FROM skill_chains c
+            JOIN skills s ON s.id = c.to_skill_id
+            WHERE c.from_skill_id = ?
+            ORDER BY c.co_applications DESC, c.success_rate DESC
+            LIMIT ?
+            "#,
+        )?;
+
+        let results = stmt.query_map(params![skill_id, limit as i64], |row| {
+            let skill = Skill {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                pattern_ids: row.get(3)?,
+                total_success: row.get(4)?,
+                total_failure: row.get(5)?,
+                pattern_count: row.get(6)?,
+                tool_type: row.get(7)?,
+                command_category: row.get(8)?,
+                times_recommended: row.get(9)?,
+                times_used: row.get(10)?,
+            };
+            let chain = SkillChain {
+                id: row.get(11)?,
+                from_skill_id: row.get(12)?,
+                to_skill_id: row.get(13)?,
+                co_applications: row.get(14)?,
+                success_rate: row.get(15)?,
+            };
+            Ok((skill, chain))
+        })?;
+
+        results.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get skills that commonly precede a given skill
+    #[allow(dead_code)]
+    pub fn get_prerequisite_skills(&self, skill_id: i64, limit: usize) -> Result<Vec<(Skill, SkillChain)>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT s.id, s.name, s.description, s.pattern_ids, s.total_success, s.total_failure,
+                   s.pattern_count, s.tool_type, s.command_category,
+                   COALESCE(s.times_recommended, 0), COALESCE(s.times_used, 0),
+                   c.id, c.from_skill_id, c.to_skill_id, c.co_applications, c.success_rate
+            FROM skill_chains c
+            JOIN skills s ON s.id = c.from_skill_id
+            WHERE c.to_skill_id = ?
+            ORDER BY c.co_applications DESC, c.success_rate DESC
+            LIMIT ?
+            "#,
+        )?;
+
+        let results = stmt.query_map(params![skill_id, limit as i64], |row| {
+            let skill = Skill {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                pattern_ids: row.get(3)?,
+                total_success: row.get(4)?,
+                total_failure: row.get(5)?,
+                pattern_count: row.get(6)?,
+                tool_type: row.get(7)?,
+                command_category: row.get(8)?,
+                times_recommended: row.get(9)?,
+                times_used: row.get(10)?,
+            };
+            let chain = SkillChain {
+                id: row.get(11)?,
+                from_skill_id: row.get(12)?,
+                to_skill_id: row.get(13)?,
+                co_applications: row.get(14)?,
+                success_rate: row.get(15)?,
+            };
+            Ok((skill, chain))
+        })?;
+
+        results.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }
 
@@ -403,6 +739,8 @@ fn create_skill_from_cluster(
         pattern_count: cluster.len() as i64,
         tool_type: tool_type.to_string(),
         command_category: category.clone(),
+        times_recommended: 0,
+        times_used: 0,
     }
 }
 
@@ -523,6 +861,8 @@ mod tests {
             pattern_count: 3,
             tool_type: "Bash".to_string(),
             command_category: Some("cargo".to_string()),
+            times_recommended: 0,
+            times_used: 0,
         };
 
         store.upsert(&skill)?;
@@ -550,6 +890,8 @@ mod tests {
             pattern_count: 2,
             tool_type: "Edit".to_string(),
             command_category: None,
+            times_recommended: 0,
+            times_used: 0,
         };
 
         assert!((skill.success_rate() - 80.0).abs() < 0.01);

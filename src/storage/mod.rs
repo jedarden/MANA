@@ -12,6 +12,7 @@ pub mod patterns;
 pub mod similarity;
 pub mod causal;
 pub mod skills;
+pub mod reasoning;
 
 pub use patterns::{PatternStore, Pattern};
 pub use similarity::calculate_similarity;
@@ -20,6 +21,8 @@ pub use causal::CausalStore;
 pub use causal::CausalEdge;
 #[allow(unused_imports)]
 pub use skills::{SkillStore, Skill, consolidate_patterns_to_skills};
+#[allow(unused_imports)]
+pub use reasoning::{ReasoningStore, ReasoningChain, ReasoningStep, ReasoningStats};
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {
