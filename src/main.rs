@@ -342,6 +342,9 @@ enum DaemonAction {
         /// Run in foreground (for debugging)
         #[arg(long)]
         foreground: bool,
+        /// Internal flag for double-fork daemonization (do not use directly)
+        #[arg(long, hide = true)]
+        daemonize: bool,
     },
 
     /// Stop the running daemon
@@ -1491,7 +1494,47 @@ async fn run_async_main(cli: Cli) -> Result<()> {
             let mana_dir = get_mana_dir()?;
 
             match action {
-                DaemonAction::Start { foreground } => {
+                DaemonAction::Start { foreground, daemonize } => {
+                    // Handle --daemonize flag (second fork in double-fork pattern)
+                    // This is called internally by ensure_daemon_running()
+                    if daemonize {
+                        #[cfg(unix)]
+                        {
+                            // Second fork: fork again and have parent exit immediately
+                            // This ensures the daemon is orphaned and adopted by init
+                            match unsafe { libc::fork() } {
+                                -1 => {
+                                    eprintln!("Second fork failed");
+                                    std::process::exit(1);
+                                }
+                                0 => {
+                                    // Child: this becomes the actual daemon
+                                    // Close any inherited file descriptors
+                                    unsafe {
+                                        libc::close(0); // stdin
+                                        libc::close(1); // stdout
+                                        libc::close(2); // stderr
+                                    }
+                                    // Run the daemon
+                                    if daemon::start_daemon(&mana_dir).is_err() {
+                                        // Can't print since we closed stderr, just exit
+                                        std::process::exit(1);
+                                    }
+                                }
+                                _ => {
+                                    // Parent: exit immediately so grandchild is orphaned
+                                    std::process::exit(0);
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            // On non-Unix, just run directly
+                            daemon::start_daemon(&mana_dir)?;
+                        }
+                        return Ok(());
+                    }
+
                     if daemon::is_running() {
                         println!("Daemon is already running");
                         return Ok(());
@@ -1594,14 +1637,24 @@ async fn run_async_main(cli: Cli) -> Result<()> {
 }
 
 pub fn get_mana_dir() -> Result<std::path::PathBuf> {
-    // Check for .mana directory in current project first
+    // Priority 1: If the binary is inside a .mana directory, use that
+    // This ensures consistent behavior regardless of working directory
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            if exe_dir.file_name().map(|n| n == ".mana").unwrap_or(false) {
+                return Ok(exe_dir.to_path_buf());
+            }
+        }
+    }
+
+    // Priority 2: Check for .mana directory in current project
     let cwd = std::env::current_dir()?;
     let project_mana = cwd.join(".mana");
     if project_mana.exists() {
         return Ok(project_mana);
     }
 
-    // Fall back to home directory
+    // Priority 3: Fall back to home directory
     let home = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     Ok(home.join(".mana"))

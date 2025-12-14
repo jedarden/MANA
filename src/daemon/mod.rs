@@ -525,106 +525,157 @@ pub fn daemon_status() -> String {
     }
 }
 
+/// Path for daemon start lockfile
+fn start_lock_path() -> PathBuf {
+    let mana_dir = crate::get_mana_dir().unwrap_or_else(|_| PathBuf::from(".mana"));
+    mana_dir.join("daemon.starting")
+}
+
 /// Ensure daemon is running, spawn if not
 ///
 /// This function spawns the daemon in the background if it's not already running.
-/// Uses proper daemonization with setsid to avoid zombie processes.
+/// Uses the classic Unix double-fork daemonization to avoid zombie processes.
+/// Uses a lockfile to prevent multiple concurrent daemon starts.
 /// Returns Ok(true) if daemon was started, Ok(false) if already running.
 pub fn ensure_daemon_running() -> Result<bool> {
     if is_running() {
         return Ok(false);
     }
 
+    let lock_file = start_lock_path();
+
+    // Check if another process is already starting the daemon
+    // Use file creation as a simple lock mechanism
+    if lock_file.exists() {
+        // Check if the lock is stale (older than 10 seconds)
+        if let Ok(metadata) = std::fs::metadata(&lock_file) {
+            if let Ok(modified) = metadata.modified() {
+                if modified.elapsed().map(|d| d.as_secs()).unwrap_or(0) < 10 {
+                    // Another process is starting the daemon, wait for it
+                    debug!("Another process is starting daemon, waiting...");
+                    for _ in 0..10 {
+                        std::thread::sleep(Duration::from_millis(100));
+                        if is_running() {
+                            return Ok(false);
+                        }
+                    }
+                    // Still not running after waiting, fall through to try starting
+                }
+            }
+        }
+        // Stale lock file, remove it
+        let _ = std::fs::remove_file(&lock_file);
+    }
+
+    // Try to create the lock file atomically
+    // If it already exists, another process got there first
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_file)
+    {
+        Ok(_) => {
+            debug!("Acquired daemon start lock");
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another process beat us to it, wait for daemon
+            debug!("Lost race for daemon start lock");
+            for _ in 0..5 {
+                std::thread::sleep(Duration::from_millis(100));
+                if is_running() {
+                    return Ok(false);
+                }
+            }
+            return Ok(false);
+        }
+        Err(_) => {
+            // Can't create lock file, proceed anyway
+        }
+    }
+
+    // Clean up lock file when we're done (success or failure)
+    struct LockGuard(PathBuf);
+    impl Drop for LockGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _lock_guard = LockGuard(lock_file);
+
     debug!("Daemon not running, attempting to start...");
 
     // Get path to current binary
     let current_exe = std::env::current_exe()
         .context("Failed to get current executable path")?;
+    debug!("Current exe: {:?}", current_exe);
 
-    // Get MANA directory
+    // Get MANA directory (detects binary location first for reliability)
     let mana_dir = crate::get_mana_dir()?;
+    debug!("MANA dir: {:?}", mana_dir);
 
-    // Spawn daemon process in background using proper daemonization
-    // Try using setsid command first (available on most Linux systems)
-    let spawn_result = std::process::Command::new("setsid")
-        .arg("--fork")
-        .arg(&current_exe)
-        .arg("daemon")
-        .arg("start")
-        .arg("--foreground")
-        .current_dir(&mana_dir)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    // Use the classic Unix double-fork daemonization pattern to avoid zombies
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
 
-    let spawned = match spawn_result {
-        Ok(_) => true,
-        Err(_) => {
-            // setsid command not available, try direct spawn with pre_exec setsid
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                match unsafe {
-                    std::process::Command::new(&current_exe)
-                        .arg("daemon")
-                        .arg("start")
-                        .arg("--foreground")
-                        .current_dir(&mana_dir)
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .pre_exec(|| {
-                            // Create new session to fully detach from parent
-                            libc::setsid();
-                            Ok(())
-                        })
-                        .spawn()
-                } {
-                    Ok(_) => true,
-                    Err(e) => {
-                        warn!("Failed to spawn daemon with setsid: {}", e);
-                        false
-                    }
-                }
+        // First fork: spawn a child that will fork again and exit
+        // The parent waits for this child, so no zombie
+        let mut child = unsafe {
+            std::process::Command::new(&current_exe)
+                .arg("daemon")
+                .arg("start")
+                .arg("--foreground")
+                .arg("--daemonize") // Signal to do second fork internally
+                .current_dir(&mana_dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .pre_exec(|| {
+                    // Create new session so child is not tied to parent's terminal
+                    libc::setsid();
+                    Ok(())
+                })
+                .spawn()
+                .context("Failed to spawn daemon child")?
+        };
+
+        // Wait for the first child (it will exit immediately after second fork)
+        // This prevents zombie processes
+        match child.wait() {
+            Ok(status) => {
+                debug!("First fork child exited with: {:?}", status);
             }
-            #[cfg(not(unix))]
-            {
-                match std::process::Command::new(&current_exe)
-                    .arg("daemon")
-                    .arg("start")
-                    .arg("--foreground")
-                    .current_dir(&mana_dir)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    Ok(_) => true,
-                    Err(e) => {
-                        warn!("Failed to spawn daemon: {}", e);
-                        false
-                    }
-                }
+            Err(e) => {
+                warn!("Failed to wait for daemon child: {}", e);
             }
         }
-    };
+    }
 
-    if !spawned {
-        return Ok(false);
+    #[cfg(not(unix))]
+    {
+        // On non-Unix, just spawn directly
+        let _ = std::process::Command::new(&current_exe)
+            .arg("daemon")
+            .arg("start")
+            .arg("--foreground")
+            .current_dir(&mana_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 
     // Wait for daemon to initialize (up to 500ms)
-    for _ in 0..5 {
+    for i in 0..5 {
         std::thread::sleep(Duration::from_millis(100));
         if is_running() {
-            info!("Daemon started successfully");
+            info!("Daemon auto-started successfully after {}ms", (i + 1) * 100);
             return Ok(true);
         }
     }
 
     // Daemon may have failed to start, but don't error - fall back to direct path
-    warn!("Daemon did not start in time, will use direct database access");
+    warn!("Daemon did not start in 500ms, using direct database access");
     Ok(false)
 }
 

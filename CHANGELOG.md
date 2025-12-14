@@ -2,6 +2,45 @@
 
 All notable changes to MANA will be documented in this file.
 
+## [0.5.3] - 2025-12-14
+
+### Fixed - Daemon Reliability Improvements
+
+This release makes the daemon auto-start mechanism completely reliable.
+
+#### No More Zombie Processes
+- **Double-fork daemonization**: Replaced `setsid --fork` with the classic Unix double-fork pattern
+- **Proper process orphaning**: The daemon process is now properly orphaned and adopted by init
+- **Child process reaping**: Parent waits for the intermediate child, preventing zombie accumulation
+
+#### Race Condition Prevention
+- **Lockfile mechanism**: Added `daemon.starting` lockfile to prevent multiple concurrent daemon starts
+- **Atomic lock acquisition**: Uses `O_CREAT | O_EXCL` for atomic lock file creation
+- **Stale lock detection**: Automatically removes lock files older than 10 seconds
+- **Graceful fallback**: Processes that lose the race wait for the daemon to become available
+
+#### Technical Details
+
+| Issue | Impact | Fix |
+|-------|--------|-----|
+| Zombie processes | 50+ defunct mana processes | Double-fork daemonization |
+| Multiple daemons | 3+ daemon instances running | Lockfile prevents concurrent starts |
+| Race conditions | Unreliable daemon startup | Atomic lock with wait/retry |
+
+## [0.5.2] - 2025-12-14
+
+### Fixed - Daemon Auto-Start Reliability
+
+This release fixes a critical issue where the daemon would fail to auto-start when invoked from certain working directories.
+
+#### Root Cause
+The `get_mana_dir()` function was using the current working directory to find the `.mana` folder. When the binary was in `/project/.mana/mana` but the working directory was `/project/mana/` (which also contained a `.mana/` folder), it would find the wrong directory.
+
+#### Fix
+- **Binary-location-first lookup**: `get_mana_dir()` now checks if the binary is inside a `.mana` directory first
+- **Consistent paths**: Ensures daemon, inject, and all commands use the same `.mana` directory
+- **Working directory independent**: The binary now works correctly regardless of where it's invoked from
+
 ## [0.5.1] - 2025-12-14
 
 ### Fixed - Critical Pattern Retention Bugs

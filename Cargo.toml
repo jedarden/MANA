@@ -1,6 +1,6 @@
 [package]
 name = "mana"
-version = "0.5.1"
+version = "0.5.3"
 edition = "2021"
 authors = ["MANA Autonomous Agent"]
 description = "Memory-Augmented Neural Assistant - High-performance learning system for Claude Code"
