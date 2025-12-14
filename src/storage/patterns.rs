@@ -449,6 +449,28 @@ impl PatternStore {
         patterns.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Mark patterns as used (updates last_used timestamp)
+    /// Called after patterns are injected into context to prevent decay
+    pub fn mark_patterns_used(&self, pattern_ids: &[i64]) -> Result<usize> {
+        if pattern_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let placeholders: Vec<String> = pattern_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "UPDATE patterns SET last_used = CURRENT_TIMESTAMP WHERE id IN ({})",
+            placeholders.join(",")
+        );
+
+        let params: Vec<&dyn rusqlite::ToSql> = pattern_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+
+        let changes = self.conn.execute(&sql, params.as_slice())?;
+        Ok(changes)
+    }
+
     /// Get top patterns across all tool types (for fallback)
     pub fn get_top_patterns(&self, limit: usize) -> Result<Vec<Pattern>> {
         let mut stmt = self.conn.prepare_cached(

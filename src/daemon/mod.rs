@@ -525,6 +525,109 @@ pub fn daemon_status() -> String {
     }
 }
 
+/// Ensure daemon is running, spawn if not
+///
+/// This function spawns the daemon in the background if it's not already running.
+/// Uses proper daemonization with setsid to avoid zombie processes.
+/// Returns Ok(true) if daemon was started, Ok(false) if already running.
+pub fn ensure_daemon_running() -> Result<bool> {
+    if is_running() {
+        return Ok(false);
+    }
+
+    debug!("Daemon not running, attempting to start...");
+
+    // Get path to current binary
+    let current_exe = std::env::current_exe()
+        .context("Failed to get current executable path")?;
+
+    // Get MANA directory
+    let mana_dir = crate::get_mana_dir()?;
+
+    // Spawn daemon process in background using proper daemonization
+    // Try using setsid command first (available on most Linux systems)
+    let spawn_result = std::process::Command::new("setsid")
+        .arg("--fork")
+        .arg(&current_exe)
+        .arg("daemon")
+        .arg("start")
+        .arg("--foreground")
+        .current_dir(&mana_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    let spawned = match spawn_result {
+        Ok(_) => true,
+        Err(_) => {
+            // setsid command not available, try direct spawn with pre_exec setsid
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                match unsafe {
+                    std::process::Command::new(&current_exe)
+                        .arg("daemon")
+                        .arg("start")
+                        .arg("--foreground")
+                        .current_dir(&mana_dir)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .pre_exec(|| {
+                            // Create new session to fully detach from parent
+                            libc::setsid();
+                            Ok(())
+                        })
+                        .spawn()
+                } {
+                    Ok(_) => true,
+                    Err(e) => {
+                        warn!("Failed to spawn daemon with setsid: {}", e);
+                        false
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                match std::process::Command::new(&current_exe)
+                    .arg("daemon")
+                    .arg("start")
+                    .arg("--foreground")
+                    .current_dir(&mana_dir)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        warn!("Failed to spawn daemon: {}", e);
+                        false
+                    }
+                }
+            }
+        }
+    };
+
+    if !spawned {
+        return Ok(false);
+    }
+
+    // Wait for daemon to initialize (up to 500ms)
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(100));
+        if is_running() {
+            info!("Daemon started successfully");
+            return Ok(true);
+        }
+    }
+
+    // Daemon may have failed to start, but don't error - fall back to direct path
+    warn!("Daemon did not start in time, will use direct database access");
+    Ok(false)
+}
+
 /// Inject context via daemon (fast path)
 pub fn inject_via_daemon(tool: &str, input: &str) -> Result<String> {
     let req = DaemonRequest {

@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "mana"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1822,6 +1822,7 @@ dependencies = [
  "dirs",
  "instant-distance",
  "lazy_static",
+ "libc",
  "rand 0.8.5",
  "regex",
  "reqwest",

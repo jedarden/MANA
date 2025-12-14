@@ -2,6 +2,39 @@
 
 All notable changes to MANA will be documented in this file.
 
+## [0.5.1] - 2025-12-14
+
+### Fixed - Critical Pattern Retention Bugs
+
+This release fixes critical bugs that were causing learned patterns to be deleted prematurely.
+
+#### Pattern Usage Tracking
+- **Fixed `last_used` never being updated**: Patterns that were injected into context were not being marked as "used", causing them to be subject to decay and eventual deletion even when actively being recommended
+- **Added `mark_patterns_used()`**: New function in `PatternStore` that updates the `last_used` timestamp when patterns are injected into context
+- **Retention improvement**: Patterns that are actually being used for context injection will no longer decay
+
+#### Daemon Auto-Start
+- **Fixed daemon not auto-starting on inject**: The `inject` command now attempts to start the daemon automatically if it's not running
+- **Added `ensure_daemon_running()`**: New function that spawns the daemon in background when needed
+- **Graceful fallback**: If daemon fails to start, falls back to direct database access without error
+
+#### Zombie Process Prevention
+- **Fixed zombie processes**: Daemon spawning now uses proper daemonization with `setsid` to prevent zombie processes
+- **Uses system `setsid` command**: Tries `setsid --fork` first (Linux)
+- **Fallback to libc**: Falls back to `libc::setsid()` via `pre_exec` if setsid command unavailable
+- **Session isolation**: Daemon runs in its own session, fully detached from parent
+
+### Technical Details
+
+| Bug | Impact | Fix |
+|-----|--------|-----|
+| `last_used` never set | 99.6% of patterns deleted over time | Now updated on every context injection |
+| No daemon auto-start | Cold start on every inject (~10ms) | Daemon spawned automatically |
+| Zombie processes | 19+ defunct processes accumulated | Proper setsid daemonization |
+
+### Dependencies
+- Added `libc = "0.2"` for Unix process control
+
 ## [0.5.0] - 2025-12-10
 
 ### Added - Comprehensive RL Algorithm Suite

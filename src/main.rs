@@ -1501,22 +1501,75 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                         println!("Starting daemon in foreground...");
                         daemon::start_daemon(&mana_dir)?;
                     } else {
-                        // Fork to background
+                        // Fork to background using proper daemonization
                         println!("Starting daemon in background...");
 
-                        // Use nohup-style background execution
+                        // Use setsid (via 'setsid' command or nohup) to properly detach
+                        // This prevents zombie processes by creating a new session
                         let exe = std::env::current_exe()?;
-                        let child = std::process::Command::new(&exe)
+
+                        // Try using setsid first (Linux), fall back to direct spawn
+                        let child_result = std::process::Command::new("setsid")
+                            .arg("--fork")
+                            .arg(&exe)
                             .arg("daemon")
                             .arg("start")
                             .arg("--foreground")
                             .stdin(std::process::Stdio::null())
                             .stdout(std::process::Stdio::null())
                             .stderr(std::process::Stdio::null())
-                            .spawn()?;
+                            .spawn();
+
+                        let child = match child_result {
+                            Ok(c) => c,
+                            Err(_) => {
+                                // setsid not available, use direct spawn with detach
+                                // On Unix, we can use pre_exec to call setsid()
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::process::CommandExt;
+                                    unsafe {
+                                        std::process::Command::new(&exe)
+                                            .arg("daemon")
+                                            .arg("start")
+                                            .arg("--foreground")
+                                            .stdin(std::process::Stdio::null())
+                                            .stdout(std::process::Stdio::null())
+                                            .stderr(std::process::Stdio::null())
+                                            .pre_exec(|| {
+                                                // Create new session to fully detach
+                                                libc::setsid();
+                                                Ok(())
+                                            })
+                                            .spawn()?
+                                    }
+                                }
+                                #[cfg(not(unix))]
+                                {
+                                    std::process::Command::new(&exe)
+                                        .arg("daemon")
+                                        .arg("start")
+                                        .arg("--foreground")
+                                        .stdin(std::process::Stdio::null())
+                                        .stdout(std::process::Stdio::null())
+                                        .stderr(std::process::Stdio::null())
+                                        .spawn()?
+                                }
+                            }
+                        };
 
                         println!("Daemon started with PID {}", child.id());
                         println!("Socket: {:?}", daemon::socket_path());
+
+                        // Wait briefly for daemon to initialize
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+
+                        // Verify daemon started
+                        if daemon::is_running() {
+                            println!("✅ Daemon is running");
+                        } else {
+                            println!("⚠️  Daemon may not have started correctly");
+                        }
                     }
                 }
                 DaemonAction::Stop => {

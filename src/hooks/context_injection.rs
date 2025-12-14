@@ -100,6 +100,10 @@ pub fn inject_context(tool: &str) -> Result<()> {
         return Ok(());
     }
 
+    // Try to ensure daemon is running (auto-start if needed)
+    // This provides faster injection on subsequent calls
+    let _ = crate::daemon::ensure_daemon_running();
+
     // Try daemon first (faster path - keeps state in memory)
     if crate::daemon::is_running() {
         debug!("Daemon is running, using daemon path");
@@ -173,6 +177,35 @@ pub fn inject_context(tool: &str) -> Result<()> {
         println!("{}", context.context_block);
         println!("</mana-context>");
         println!();
+
+        // Mark patterns as used to prevent decay
+        // This is critical for pattern retention - patterns that are actually
+        // being injected should not be subject to unused pattern decay
+        if !context.patterns_used.is_empty() {
+            let mana_dir = get_mana_dir()?;
+            let db_path = mana_dir.join("metadata.sqlite");
+            debug!("Marking {} patterns as used, db_path: {:?}", context.patterns_used.len(), db_path);
+            if db_path.exists() {
+                // Open with write access to update last_used
+                match crate::storage::PatternStore::open(&db_path) {
+                    Ok(store) => {
+                        match store.mark_patterns_used(&context.patterns_used) {
+                            Ok(count) => {
+                                debug!("Successfully marked {} patterns as used", count);
+                            }
+                            Err(e) => {
+                                warn!("Failed to mark patterns as used: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to open pattern store for marking: {}", e);
+                    }
+                }
+            } else {
+                warn!("Database path does not exist: {:?}", db_path);
+            }
+        }
     }
 
     // Pass through original input
