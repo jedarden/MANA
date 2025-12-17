@@ -1,8 +1,7 @@
 //! ReasoningBank - Structured reasoning chain storage
 //!
-//! Inspired by AgentDB's ReasoningBank, this module stores structured
-//! reasoning chains that capture the thought process behind successful
-//! operations. This enables:
+//! This module stores structured reasoning chains that capture the
+//! thought process behind successful operations. This enables:
 //!
 //! - Learning from reasoning patterns, not just outcomes
 //! - Identifying common problem-solving strategies

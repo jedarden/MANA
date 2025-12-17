@@ -114,6 +114,11 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
     let mut edit_count = 0;
     let mut bash_count = 0;
 
+    // Track pattern counts by type
+    let mut reasoning_count = 0;
+    let mut conversation_count = 0;
+    let mut system_count = 0;
+
     for trajectory in all_trajectories.iter().take(100) {
         // Extract patterns from individual successful tool calls
         let patterns = extract_per_tool_patterns(trajectory);
@@ -130,8 +135,26 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
         let failure_patterns = extract_failure_patterns(trajectory);
         all_patterns.extend(failure_patterns);
 
+        // NEW: Extract reasoning patterns from thinking blocks
+        let reasoning_patterns = extract_reasoning_patterns(trajectory);
+        reasoning_count += reasoning_patterns.len();
+        all_patterns.extend(reasoning_patterns);
+
+        // NEW: Extract conversation patterns from pure dialogue
+        let conv_patterns = extract_conversation_patterns(trajectory);
+        conversation_count += conv_patterns.len();
+        all_patterns.extend(conv_patterns);
+
+        // NEW: Extract system context patterns
+        let sys_patterns = extract_system_patterns(trajectory);
+        system_count += sys_patterns.len();
+        all_patterns.extend(sys_patterns);
+
         result.trajectories_processed += 1;
     }
+
+    info!("Extracted {} reasoning, {} conversation, {} system patterns",
+          reasoning_count, conversation_count, system_count);
 
     info!("Extracted {} Edit patterns, {} Bash patterns", edit_count, bash_count);
 
@@ -931,10 +954,391 @@ fn generate_embeddings_for_new_patterns(mana_dir: &Path) -> Result<usize> {
     Ok(embedded)
 }
 
+/// Extract patterns from thinking/reasoning blocks
+///
+/// Creates patterns that capture how Claude reasons about problems,
+/// useful for learning good reasoning strategies.
+fn extract_reasoning_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
+    let mut patterns = Vec::new();
+
+    // Only extract from trajectories with thinking content
+    if trajectory.thinking_content.is_empty() {
+        return patterns;
+    }
+
+    // Extract task category for context
+    let task_category = extract_task_category(&trajectory.user_query);
+
+    for thinking in &trajectory.thinking_content {
+        // Skip very short thinking blocks (likely not meaningful)
+        if thinking.content.len() < 50 {
+            continue;
+        }
+
+        // Extract key reasoning patterns from the thinking block
+        let reasoning_summary = extract_reasoning_summary(&thinking.content);
+
+        if reasoning_summary.is_empty() {
+            continue;
+        }
+
+        let context_query = format!(
+            "Task: {}\nReasoning: {}\nOutcome: {}",
+            task_category,
+            reasoning_summary,
+            if trajectory.verdict.map(|v| v.success).unwrap_or(false) { "Success" } else { "Incomplete" }
+        );
+
+        let pattern_hash = hash_string(&context_query);
+
+        patterns.push(Pattern {
+            id: 0,
+            pattern_hash,
+            tool_type: "reasoning".to_string(),
+            command_category: Some("thinking".to_string()),
+            context_query,
+            success_count: if trajectory.verdict.map(|v| v.success).unwrap_or(false) { 1 } else { 0 },
+            failure_count: if trajectory.verdict.map(|v| v.success).unwrap_or(false) { 0 } else { 1 },
+            embedding_id: None,
+        });
+
+        if patterns.len() >= MAX_PATTERNS_PER_TRAJECTORY {
+            break;
+        }
+    }
+
+    patterns
+}
+
+/// Extract a summary of reasoning from thinking content
+fn extract_reasoning_summary(thinking: &str) -> String {
+    // Extract key reasoning patterns
+    let mut summary_parts = Vec::new();
+
+    let lower = thinking.to_lowercase();
+
+    // Look for planning/strategy indicators
+    if lower.contains("let me") || lower.contains("i need to") || lower.contains("first") {
+        // Find the sentence containing planning
+        for line in thinking.lines().take(5) {
+            if line.to_lowercase().contains("let me")
+               || line.to_lowercase().contains("i need to")
+               || line.to_lowercase().contains("first") {
+                let clean = line.trim();
+                if clean.len() > 20 && clean.len() < 200 {
+                    summary_parts.push(clean.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Look for analysis patterns
+    if lower.contains("analyzing") || lower.contains("looking at") || lower.contains("examining") {
+        for line in thinking.lines() {
+            let line_lower = line.to_lowercase();
+            if line_lower.contains("analyzing")
+               || line_lower.contains("looking at")
+               || line_lower.contains("examining") {
+                let clean = line.trim();
+                if clean.len() > 20 && clean.len() < 200 {
+                    summary_parts.push(clean.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Look for decision points
+    if lower.contains("should") || lower.contains("could") || lower.contains("option") {
+        for line in thinking.lines() {
+            let line_lower = line.to_lowercase();
+            if line_lower.contains("should")
+               || line_lower.contains("could")
+               || (line_lower.contains("option") && !line_lower.contains("optional")) {
+                let clean = line.trim();
+                if clean.len() > 20 && clean.len() < 200 {
+                    summary_parts.push(clean.to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    // If no specific patterns found, extract first meaningful line
+    if summary_parts.is_empty() {
+        for line in thinking.lines().take(10) {
+            let clean = line.trim();
+            if clean.len() > 30 && clean.len() < 200
+               && !clean.starts_with("```")
+               && !clean.starts_with("//")
+               && !clean.starts_with("#") {
+                summary_parts.push(clean.to_string());
+                break;
+            }
+        }
+    }
+
+    // Combine and truncate
+    let result = summary_parts.join(" | ");
+    if result.len() > 300 {
+        format!("{}...", &result[..297])
+    } else {
+        result
+    }
+}
+
+/// Extract patterns from conversation-only trajectories
+///
+/// Creates patterns that capture good Q&A interactions, explanations,
+/// and knowledge sharing sessions.
+fn extract_conversation_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
+    let mut patterns = Vec::new();
+
+    // Only extract from conversation-only trajectories
+    if !trajectory.is_conversation_only {
+        return patterns;
+    }
+
+    // Need meaningful content
+    if trajectory.assistant_content.len() < 100 {
+        return patterns;
+    }
+
+    // Determine conversation type
+    let conversation_type = classify_conversation(&trajectory.user_query);
+
+    // Extract quality indicators
+    let response_quality = assess_response_quality(&trajectory.assistant_content);
+
+    // Only create patterns for high-quality conversations
+    if response_quality < 0.6 {
+        return patterns;
+    }
+
+    let context_query = format!(
+        "Question type: {}\nQuery: {}\nResponse approach: {}\nQuality: {:.0}%",
+        conversation_type,
+        truncate(&trajectory.user_query, 100),
+        extract_response_approach(&trajectory.assistant_content),
+        response_quality * 100.0
+    );
+
+    let pattern_hash = hash_string(&context_query);
+
+    patterns.push(Pattern {
+        id: 0,
+        pattern_hash,
+        tool_type: "conversation".to_string(),
+        command_category: Some(conversation_type),
+        context_query,
+        success_count: 1,
+        failure_count: 0,
+        embedding_id: None,
+    });
+
+    patterns
+}
+
+/// Classify the type of conversation based on user query
+fn classify_conversation(query: &str) -> String {
+    let lower = query.to_lowercase();
+
+    if lower.contains("what is") || lower.contains("what are") || lower.contains("what does") {
+        "definition".to_string()
+    } else if lower.contains("how do") || lower.contains("how to") || lower.contains("how can") {
+        "how-to".to_string()
+    } else if lower.contains("why") {
+        "explanation".to_string()
+    } else if lower.contains("explain") || lower.contains("describe") {
+        "explanation".to_string()
+    } else if lower.contains("difference") || lower.contains("compare") {
+        "comparison".to_string()
+    } else if lower.contains("example") || lower.contains("show me") {
+        "example".to_string()
+    } else if lower.contains("review") || lower.contains("feedback") {
+        "review".to_string()
+    } else if lower.starts_with("is ") || lower.starts_with("are ") || lower.starts_with("can ") {
+        "yes-no".to_string()
+    } else {
+        "general".to_string()
+    }
+}
+
+/// Assess the quality of a response
+fn assess_response_quality(response: &str) -> f64 {
+    let mut score: f64 = 0.5; // Base score
+
+    // Length check (not too short, not too long)
+    let len = response.len();
+    if len > 200 && len < 5000 {
+        score += 0.1;
+    }
+
+    // Structure indicators
+    if response.contains("1.") || response.contains("- ") || response.contains("* ") {
+        score += 0.1; // Has structure
+    }
+
+    // Code examples
+    if response.contains("```") {
+        score += 0.1; // Has code examples
+    }
+
+    // Explanation depth
+    let lower = response.to_lowercase();
+    if lower.contains("because") || lower.contains("this means") || lower.contains("in other words") {
+        score += 0.1; // Has explanations
+    }
+
+    // Complete sentences
+    if response.ends_with('.') || response.ends_with('!') || response.ends_with(':') {
+        score += 0.05;
+    }
+
+    score.min(1.0)
+}
+
+/// Extract the approach used in a response
+fn extract_response_approach(response: &str) -> String {
+    let lower = response.to_lowercase();
+
+    let mut approaches = Vec::new();
+
+    if response.contains("```") {
+        approaches.push("code example");
+    }
+    if lower.contains("1.") || lower.contains("step") {
+        approaches.push("step-by-step");
+    }
+    if lower.contains("for example") || lower.contains("e.g.") {
+        approaches.push("with examples");
+    }
+    if lower.contains("note:") || lower.contains("important:") || lower.contains("warning:") {
+        approaches.push("with caveats");
+    }
+
+    if approaches.is_empty() {
+        "direct explanation".to_string()
+    } else {
+        approaches.join(", ")
+    }
+}
+
+/// Extract patterns from system messages (learning from context/prompts)
+fn extract_system_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
+    use crate::learning::trajectory::SystemMessageType;
+
+    let mut patterns = Vec::new();
+
+    // Only process meaningful system messages
+    for sys_msg in &trajectory.system_messages {
+        // Skip reminders and very short messages
+        if matches!(sys_msg.msg_type, SystemMessageType::SystemReminder) {
+            continue;
+        }
+
+        if sys_msg.content.len() < 100 {
+            continue;
+        }
+
+        // Extract context type
+        let context_type = match &sys_msg.msg_type {
+            SystemMessageType::SystemPrompt => "system_prompt",
+            SystemMessageType::Context => "project_context",
+            SystemMessageType::SystemReminder => continue, // Skip
+            SystemMessageType::Other(t) => t.as_str(),
+        };
+
+        // Create a summary of the system context
+        let context_summary = extract_system_summary(&sys_msg.content);
+
+        if context_summary.len() < 20 {
+            continue;
+        }
+
+        let context_query = format!(
+            "Context type: {}\nSummary: {}\nUsed in: {}",
+            context_type,
+            context_summary,
+            extract_task_category(&trajectory.user_query)
+        );
+
+        let pattern_hash = hash_string(&context_query);
+
+        patterns.push(Pattern {
+            id: 0,
+            pattern_hash,
+            tool_type: "system_context".to_string(),
+            command_category: Some(context_type.to_string()),
+            context_query,
+            success_count: if trajectory.verdict.map(|v| v.success).unwrap_or(false) { 1 } else { 0 },
+            failure_count: 0,
+            embedding_id: None,
+        });
+
+        if patterns.len() >= 2 {
+            break; // Limit system patterns
+        }
+    }
+
+    patterns
+}
+
+/// Extract a summary from system message content
+fn extract_system_summary(content: &str) -> String {
+    // Look for key configuration or instruction lines
+    let mut summary_parts = Vec::new();
+
+    for line in content.lines().take(20) {
+        let trimmed = line.trim();
+
+        // Skip empty or very short lines
+        if trimmed.len() < 10 {
+            continue;
+        }
+
+        // Skip markdown headers that are just formatting
+        if trimmed.starts_with("##") && trimmed.len() < 30 {
+            continue;
+        }
+
+        // Look for instruction-like content
+        let lower = trimmed.to_lowercase();
+        if lower.contains("must") || lower.contains("should") || lower.contains("always")
+           || lower.contains("never") || lower.contains("important") {
+            summary_parts.push(trimmed.to_string());
+            if summary_parts.len() >= 3 {
+                break;
+            }
+        }
+    }
+
+    // If no specific patterns, get first meaningful line
+    if summary_parts.is_empty() {
+        for line in content.lines().take(10) {
+            let trimmed = line.trim();
+            if trimmed.len() > 30 && trimmed.len() < 200
+               && !trimmed.starts_with("```")
+               && !trimmed.starts_with("//") {
+                summary_parts.push(trimmed.to_string());
+                break;
+            }
+        }
+    }
+
+    let result = summary_parts.join(" | ");
+    if result.len() > 250 {
+        format!("{}...", &result[..247])
+    } else {
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::learning::trajectory::{ToolCall, ToolResult, Verdict};
+    use crate::learning::trajectory::{ToolCall, ToolResult, Verdict, ThinkingBlock, SystemMessage, SystemMessageType};
 
     #[test]
     fn test_extract_success_patterns() {
@@ -948,9 +1352,11 @@ mod tests {
                     "file_path": "/project/src/main.rs",
                     "old_string": "let x: String = 123;"
                 }),
+                tool_use_id: Some("tool_123".into()),
             }],
             tool_results: vec![],
             verdict: Some(Verdict { success: true, confidence: 0.9 }),
+            ..Default::default()
         };
 
         let patterns = extract_success_patterns(&trajectory);
@@ -976,6 +1382,7 @@ mod tests {
                 is_error: true,
             }],
             verdict: Some(Verdict { success: false, confidence: 0.8 }),
+            ..Default::default()
         };
 
         let patterns = extract_failure_patterns(&trajectory);
@@ -999,10 +1406,88 @@ mod tests {
                 is_error: true,
             }],
             verdict: Some(Verdict { success: false, confidence: 0.8 }),
+            ..Default::default()
         };
 
         let patterns = extract_failure_patterns(&trajectory);
         assert_eq!(patterns.len(), 0, "Noise content should be filtered");
+    }
+
+    #[test]
+    fn test_extract_reasoning_patterns() {
+        let trajectory = Trajectory {
+            session_id: "test".into(),
+            user_query: "How should I refactor this database module?".into(),
+            assistant_content: "Here's my recommendation for refactoring".into(),
+            thinking_content: vec![ThinkingBlock {
+                content: "Let me analyze the current structure. I need to first understand the dependencies between modules. Looking at the code, I should consider extracting the database connection logic into a separate trait.".into(),
+                position: 1,
+            }],
+            verdict: Some(Verdict { success: true, confidence: 0.9 }),
+            ..Default::default()
+        };
+
+        let patterns = extract_reasoning_patterns(&trajectory);
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].tool_type, "reasoning");
+        assert!(patterns[0].context_query.contains("Reasoning"));
+    }
+
+    #[test]
+    fn test_extract_conversation_patterns() {
+        let trajectory = Trajectory {
+            session_id: "test".into(),
+            user_query: "What is the difference between a trait and an interface?".into(),
+            assistant_content: "A trait in Rust is similar to an interface in other languages, but with some key differences. First, traits can provide default implementations for methods. Second, traits support associated types which interfaces typically don't. Here's an example:\n\n```rust\ntrait Animal {\n    fn speak(&self);\n}\n```\n\nThis allows for more flexible and powerful abstractions.".into(),
+            is_conversation_only: true,
+            verdict: Some(Verdict { success: true, confidence: 0.9 }),
+            ..Default::default()
+        };
+
+        let patterns = extract_conversation_patterns(&trajectory);
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].tool_type, "conversation");
+        assert!(patterns[0].context_query.contains("comparison"));
+    }
+
+    #[test]
+    fn test_extract_system_patterns() {
+        let trajectory = Trajectory {
+            session_id: "test".into(),
+            user_query: "Fix the type error".into(),
+            assistant_content: "Fixed".into(),
+            system_messages: vec![SystemMessage {
+                content: "You must always write tests for new code. You should follow the existing code style. Important: Never commit directly to main.".into(),
+                msg_type: SystemMessageType::SystemPrompt,
+            }],
+            verdict: Some(Verdict { success: true, confidence: 0.9 }),
+            ..Default::default()
+        };
+
+        let patterns = extract_system_patterns(&trajectory);
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].tool_type, "system_context");
+    }
+
+    #[test]
+    fn test_classify_conversation() {
+        assert_eq!(classify_conversation("What is a closure?"), "definition");
+        assert_eq!(classify_conversation("How do I implement a trait?"), "how-to");
+        assert_eq!(classify_conversation("Why does Rust use ownership?"), "explanation");
+        assert_eq!(classify_conversation("What's the difference between Vec and array?"), "comparison");
+        assert_eq!(classify_conversation("Show me an example of pattern matching"), "example");
+        assert_eq!(classify_conversation("Is this code correct?"), "yes-no");
+    }
+
+    #[test]
+    fn test_assess_response_quality() {
+        // Short response = lower quality
+        let short = "Yes.";
+        assert!(assess_response_quality(short) < 0.6);
+
+        // Structured response with code = higher quality
+        let structured = "Here's how you can do it:\n\n1. First, create the struct\n2. Then implement the trait\n\n```rust\nstruct Foo;\n```\n\nThis works because the compiler can infer the types.";
+        assert!(assess_response_quality(structured) >= 0.8);
     }
 
     #[test]
@@ -1130,14 +1615,24 @@ mod tests {
                     "command": "cargo build --release",
                     "description": "Build release binary"
                 }),
+                tool_use_id: Some("tool_456".into()),
             }],
             tool_results: vec![],
             verdict: Some(Verdict { success: true, confidence: 0.9 }),
+            ..Default::default()
         };
 
         let patterns = extract_success_patterns(&trajectory);
         assert_eq!(patterns.len(), 1);
         assert_eq!(patterns[0].tool_type, "Bash");
         assert_eq!(patterns[0].command_category, Some("cargo".to_string()));
+    }
+
+    #[test]
+    fn test_extract_reasoning_summary() {
+        let thinking = "Let me analyze this problem. First, I need to understand the requirements. Looking at the code structure, I should refactor the module.";
+        let summary = extract_reasoning_summary(thinking);
+        assert!(!summary.is_empty());
+        assert!(summary.contains("Let me") || summary.contains("First") || summary.contains("Looking"));
     }
 }

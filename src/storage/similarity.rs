@@ -4,7 +4,7 @@
 //! without requiring external ML libraries.
 //!
 //! Optimized for sub-millisecond performance on small pattern sets.
-//! Includes LRU cache for repeated similarity calculations (inspired by AgentDB).
+//! Includes LRU cache for repeated similarity calculations.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

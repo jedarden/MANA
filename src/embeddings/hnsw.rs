@@ -7,8 +7,6 @@
 //! - Build time: O(n log n)
 //! - Search time: O(log n)
 //! - Memory: O(n * M) where M is the max connections per node
-//!
-//! Inspired by AgentDB's RuVector implementation.
 
 #![allow(dead_code)] // New API - will be integrated in future versions
 

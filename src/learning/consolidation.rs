@@ -4,7 +4,7 @@
 //! - Merge similar patterns
 //! - Decay unused patterns
 //! - Build skill summaries
-//! - Self-heal: validate, repair, and prevent degradation (inspired by AgentDB)
+//! - Self-heal: validate, repair, and prevent degradation
 
 use anyhow::Result;
 use std::collections::HashMap;

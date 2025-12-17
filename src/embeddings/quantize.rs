@@ -7,10 +7,6 @@
 //! - Scalar Quantization (SQ8): 4x memory reduction, ~1% recall loss
 //! - Scalar Quantization (SQ4): 8x memory reduction, ~3% recall loss
 //! - Binary Quantization: 32x memory reduction, ~5-10% recall loss
-//!
-//! Performance vs AgentDB:
-//! - AgentDB uses product quantization with 4-32x reduction
-//! - MANA uses simpler scalar quantization for lower CPU overhead
 
 #![allow(dead_code)] // New API - will be integrated in future versions
 

@@ -1,9 +1,9 @@
 //! Performance benchmarking for MANA
 //!
 //! Comprehensive benchmark suite measuring key performance metrics.
-//! Targets based on AgentDB comparison:
-//! - Context injection: <10ms (AgentDB: 61μs RuVector)
-//! - Pattern search: <0.5ms (AgentDB: 100μs)
+//! Performance targets:
+//! - Context injection: <10ms
+//! - Pattern search: <0.5ms
 //! - Similarity cache hit: <10μs
 //! - Session-end parsing: <20ms
 //! - Binary startup: <50ms
@@ -17,14 +17,13 @@ use std::time::Instant;
 /// Run performance benchmarks
 pub async fn run_benchmarks() -> Result<BenchmarkResults> {
     println!("MANA Performance Benchmarks");
-    println!("===========================");
-    println!("Comparing against AgentDB targets where applicable\n");
+    println!("===========================\n");
 
     let mut results = BenchmarkResults::default();
 
     // Benchmark 1: Context injection latency
     println!("1. Context Injection Latency");
-    println!("   Target: <10ms | AgentDB reference: 61μs");
+    println!("   Target: <10ms");
     let injection_times = benchmark_injection(10)?;
     let avg_injection = injection_times.iter().sum::<u128>() as f64 / injection_times.len() as f64;
     let min_injection = *injection_times.iter().min().unwrap_or(&0);
@@ -49,7 +48,7 @@ pub async fn run_benchmarks() -> Result<BenchmarkResults> {
 
     // Benchmark 2: Pattern search latency (just DB query, no stdin)
     println!("2. Pattern Search Latency (DB + Similarity)");
-    println!("   Target: <0.5ms | AgentDB reference: 100μs");
+    println!("   Target: <0.5ms");
     let search_times = benchmark_pattern_search(50)?;
     let avg_search = search_times.iter().sum::<u128>() as f64 / search_times.len() as f64;
     let min_search = *search_times.iter().min().unwrap_or(&0);
@@ -98,7 +97,7 @@ pub async fn run_benchmarks() -> Result<BenchmarkResults> {
 
     // Benchmark 4: Batch pattern insertion
     println!("4. Batch Pattern Insertion");
-    println!("   Target: >1000 patterns/sec | AgentDB reference: 5,556 ops/sec");
+    println!("   Target: >1000 patterns/sec");
     let (insert_count, insert_time_ms) = benchmark_batch_insert(100)?;
     let ops_per_sec = if insert_time_ms > 0.0 {
         (insert_count as f64 / insert_time_ms) * 1000.0
@@ -140,17 +139,14 @@ pub async fn run_benchmarks() -> Result<BenchmarkResults> {
     }
     println!();
 
-    // Comparison table
-    println!("AgentDB Comparison");
-    println!("------------------");
-    println!("| Metric              | MANA        | AgentDB     | Gap     |");
-    println!("|---------------------|-------------|-------------|---------|");
-    println!("| Pattern Search p50  | {:>7.0}μs   | {:>7}μs   | {:>5.1}x  |",
-             results.search_p50_us, 100, results.search_p50_us / 100.0);
-    println!("| Batch Insert        | {:>7.0}/s   | {:>7}/s   | {:>5.1}x  |",
-             results.batch_insert_ops_per_sec, 5556,
-             if results.batch_insert_ops_per_sec > 0.0 { 5556.0 / results.batch_insert_ops_per_sec } else { 0.0 });
-    println!("| Cache Speedup       | {:>7.1}x    | N/A         | -       |", speedup);
+    // Results summary
+    println!("Performance Summary");
+    println!("-------------------");
+    println!("| Metric              | Value       |");
+    println!("|---------------------|-------------|");
+    println!("| Pattern Search p50  | {:>7.0}μs   |", results.search_p50_us);
+    println!("| Batch Insert        | {:>7.0}/s   |", results.batch_insert_ops_per_sec);
+    println!("| Cache Speedup       | {:>7.1}x    |", speedup);
     println!();
 
     // Show pattern count for context
@@ -434,18 +430,18 @@ impl BenchmarkResults {
     #[allow(dead_code)]
     pub fn to_markdown(&self) -> String {
         format!(
-            r#"| Metric | Value | Target | AgentDB |
-|--------|-------|--------|---------|
-| Injection latency (avg) | {:.2}ms | <10ms | 0.061ms |
-| Injection latency (p50) | {:.0}μs | - | 61μs |
-| Injection latency (p99) | {:.0}μs | - | - |
-| Search latency (avg) | {:.3}ms | <0.5ms | 0.1ms |
-| Search latency (p50) | {:.0}μs | - | 100μs |
-| Cache hit latency | {:.1}μs | <10μs | N/A |
-| Cache miss latency | {:.1}μs | <500μs | N/A |
-| Batch insert | {:.0}/s | >1000/s | 5556/s |
-| Startup time (avg) | {:.2}ms | <50ms | - |
-| Pattern count | {} | - | - |"#,
+            r#"| Metric | Value | Target |
+|--------|-------|--------|
+| Injection latency (avg) | {:.2}ms | <10ms |
+| Injection latency (p50) | {:.0}μs | - |
+| Injection latency (p99) | {:.0}μs | - |
+| Search latency (avg) | {:.3}ms | <0.5ms |
+| Search latency (p50) | {:.0}μs | - |
+| Cache hit latency | {:.1}μs | <10μs |
+| Cache miss latency | {:.1}μs | <500μs |
+| Batch insert | {:.0}/s | >1000/s |
+| Startup time (avg) | {:.2}ms | <50ms |
+| Pattern count | {} | - |"#,
             self.injection_avg_ms,
             self.injection_p50_us,
             self.injection_p99_us,

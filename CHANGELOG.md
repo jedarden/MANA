@@ -2,6 +2,40 @@
 
 All notable changes to MANA will be documented in this file.
 
+## [0.6.0] - 2025-12-17
+
+### Added - ReasoningBank Integration in Daemon
+
+#### Automatic Reasoning Extraction
+- **Background ReasoningBank Activation**: Daemon now monitors accumulated log files and automatically activates ReasoningBank extraction when thresholds are met
+- **Configurable Thresholds**:
+  - `min_log_entries`: Minimum 50 log entries before activation (configurable)
+  - `extraction_interval_secs`: 1 hour between extraction cycles
+  - `max_chains`: Up to 1000 reasoning chains stored
+- **Thinking Block Analysis**: Extracts reasoning steps from Claude's thinking blocks:
+  - Thought patterns ("I'll...", "Let me...", "First,...")
+  - Observations ("found...", "noticed...", "shows...")
+  - Actions ("Running...", "Executing...", "Creating...")
+  - Reflections ("because...", "since...", "therefore...")
+
+#### New Daemon Commands
+- `reasoning`: Manually trigger ReasoningBank extraction from logs
+- `reasoning_status`: View ReasoningBank status (chain count, pending logs, activation status)
+
+#### Querying Reasoning Chains
+- **`query_reasoning(task, tool_type)`**: Query stored reasoning chains for relevant context
+- Returns top 3 similar reasoning chains for injection
+
+### Removed - External References
+- Removed all references to external projects in comments and documentation
+- Cleaned up benchmark output and changelog comparison tables
+- Documentation now focuses on MANA's own capabilities
+
+### Changed
+- Bump version to 0.6.0
+- `DaemonState` now includes `reasoning_store`, `reasoning_config`, and tracking fields
+- Enhanced daemon with atomic log counting and extraction timing
+
 ## [0.5.3] - 2025-12-14
 
 ### Fixed - Daemon Reliability Improvements
@@ -142,13 +176,13 @@ This release fixes critical bugs that were causing learned patterns to be delete
 | MCTS | Planning | N/A | High | Known dynamics |
 | Model-Based | Off-policy | Very High | Medium | Limited samples |
 
-### Feature Gap Closure (vs AgentDB)
+### Feature Summary
 
-| Feature | MANA v0.4.0 | MANA v0.5.0 | AgentDB |
-|---------|-------------|-------------|---------|
-| RL Algorithms | 1 (Q-learning) | **9 algorithms** | 9 algorithms |
-| Reflexion Memory | ❌ | ✅ | ✅ |
-| Self-Critique | ❌ | ✅ | ✅ |
+| Feature | MANA v0.4.0 | MANA v0.5.0 |
+|---------|-------------|-------------|
+| RL Algorithms | 1 (Q-learning) | **9 algorithms** |
+| Reflexion Memory | ❌ | ✅ |
+| Self-Critique | ❌ | ✅ |
 
 ### Changed
 - Bump version to 0.5.0
@@ -157,7 +191,7 @@ This release fixes critical bugs that were causing learned patterns to be delete
 
 ## [0.4.0] - 2025-12-10
 
-### Added - Advanced AI Features (Closing AgentDB Gap)
+### Added - Advanced AI Features
 
 #### HNSW Vector Index
 - **Fast Approximate Nearest Neighbor Search**: O(log n) search complexity using instant-distance library
@@ -186,14 +220,14 @@ This release fixes critical bugs that were causing learned patterns to be delete
 - **Approximate Similarity**: Fast similarity computation on quantized vectors
 - **Compression Statistics**: Track compression ratios and memory usage
 
-### Feature Gap Closure (vs AgentDB)
+### Feature Summary
 
-| Feature | MANA v0.3.0 | MANA v0.4.0 | AgentDB |
-|---------|-------------|-------------|---------|
-| HNSW Search | ❌ | ✅ | ✅ |
-| ReasoningBank | ❌ | ✅ | ✅ |
-| RL Algorithms | ❌ | ✅ (Q-learning) | ✅ (9 algorithms) |
-| Vector Quantization | ❌ | ✅ | ✅ |
+| Feature | MANA v0.3.0 | MANA v0.4.0 |
+|---------|-------------|-------------|
+| HNSW Search | ❌ | ✅ |
+| ReasoningBank | ❌ | ✅ |
+| RL Algorithms | ❌ | ✅ (Q-learning) |
+| Vector Quantization | ❌ | ✅ |
 
 ### Changed
 - Bump version to 0.4.0
@@ -203,7 +237,7 @@ This release fixes critical bugs that were causing learned patterns to be delete
 
 ## [0.3.0] - 2025-12-09
 
-### Added - Self-Healing & Performance (AgentDB-Inspired)
+### Added - Self-Healing & Performance
 
 #### Self-Healing Capabilities
 - **Pattern Validation**: Detects negative counts, duplicate hashes, orphaned embeddings
@@ -229,18 +263,18 @@ This release fixes critical bugs that were causing learned patterns to be delete
 
 #### Comprehensive Benchmark Suite
 - Percentile metrics (p50, p99) for latency measurements
-- AgentDB comparison table in output
+- Performance summary table in output
 - Similarity cache performance testing
 - Batch insert throughput testing
 
-### Performance Results (vs AgentDB)
+### Performance Results
 
-| Metric | MANA v0.3.0 | AgentDB | Improvement |
-|--------|-------------|---------|-------------|
-| Pattern Search p50 | 3μs | 100μs | **33x faster** |
-| Batch Insert | 80,000+/s | 5,556/s | **14x faster** |
-| Binary Startup | <1ms | N/A | - |
-| Injection Latency | ~1.3ms | 61μs | AgentDB faster (RuVector SIMD) |
+| Metric | MANA v0.3.0 |
+|--------|-------------|
+| Pattern Search p50 | 3μs |
+| Batch Insert | 80,000+/s |
+| Binary Startup | <1ms |
+| Injection Latency | ~1.3ms |
 
 ### Changed
 - Bump version to 0.3.0

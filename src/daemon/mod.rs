@@ -26,6 +26,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::embeddings::EmbeddingStore;
 use crate::storage::calculate_similarity;
+use crate::storage::{ReasoningStore, ReasoningChain, ReasoningStep};
 
 /// Socket path for daemon communication
 pub fn socket_path() -> PathBuf {
@@ -79,12 +80,39 @@ impl DaemonResponse {
     }
 }
 
+/// Configuration for ReasoningBank activation
+#[derive(Debug, Clone)]
+pub struct ReasoningBankConfig {
+    /// Minimum log entries before triggering reasoning extraction
+    pub min_log_entries: usize,
+    /// Interval between reasoning extraction cycles (seconds)
+    pub extraction_interval_secs: u64,
+    /// Maximum reasoning chains to keep
+    pub max_chains: usize,
+}
+
+impl Default for ReasoningBankConfig {
+    fn default() -> Self {
+        Self {
+            min_log_entries: 50,
+            extraction_interval_secs: 3600, // 1 hour
+            max_chains: 1000,
+        }
+    }
+}
+
 /// Daemon state holding pre-loaded resources
 pub struct DaemonState {
     pub conn: Connection,
     pub embedding_store: Option<EmbeddingStore>,
+    pub reasoning_store: Option<ReasoningStore>,
     #[allow(dead_code)]
     pub mana_dir: PathBuf,
+    pub reasoning_config: ReasoningBankConfig,
+    /// Track accumulated log entries for ReasoningBank trigger
+    pub log_entry_count: std::sync::atomic::AtomicUsize,
+    /// Last reasoning extraction timestamp
+    pub last_reasoning_extraction: std::sync::Mutex<std::time::Instant>,
 }
 
 impl DaemonState {
@@ -110,11 +138,107 @@ impl DaemonState {
             warn!("Embedding store not available");
         }
 
+        // Initialize ReasoningBank store
+        info!("Initializing ReasoningBank...");
+        let reasoning_db_path = mana_dir.join("reasoning.sqlite");
+        let reasoning_store = ReasoningStore::open(&reasoning_db_path).ok();
+
+        if reasoning_store.is_some() {
+            info!("ReasoningBank initialized successfully");
+        } else {
+            warn!("ReasoningBank not available");
+        }
+
         Ok(Self {
             conn,
             embedding_store,
+            reasoning_store,
             mana_dir: mana_dir.to_path_buf(),
+            reasoning_config: ReasoningBankConfig::default(),
+            log_entry_count: std::sync::atomic::AtomicUsize::new(0),
+            last_reasoning_extraction: std::sync::Mutex::new(std::time::Instant::now()),
         })
+    }
+
+    /// Check if ReasoningBank should be activated based on accumulated logs
+    pub fn should_activate_reasoning(&self) -> bool {
+        let count = self.log_entry_count.load(std::sync::atomic::Ordering::Relaxed);
+        let elapsed = self.last_reasoning_extraction
+            .lock()
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+
+        // Activate if we have enough log entries AND enough time has passed
+        count >= self.reasoning_config.min_log_entries
+            && elapsed >= self.reasoning_config.extraction_interval_secs
+    }
+
+    /// Increment log entry count (called when processing session logs)
+    pub fn increment_log_count(&self, count: usize) {
+        self.log_entry_count.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Run ReasoningBank extraction from accumulated logs
+    pub fn run_reasoning_extraction(&self) -> Result<usize> {
+        let reasoning_store = match &self.reasoning_store {
+            Some(store) => store,
+            None => return Ok(0),
+        };
+
+        info!("Running ReasoningBank extraction...");
+
+        // Get Claude logs directory
+        let claude_logs = dirs::home_dir()
+            .map(|h| h.join(".claude").join("logs"))
+            .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+
+        if !claude_logs.exists() {
+            debug!("No Claude logs directory found");
+            return Ok(0);
+        }
+
+        let mut chains_extracted = 0;
+
+        // Process recent log files
+        let log_files: Vec<_> = std::fs::read_dir(&claude_logs)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "jsonl").unwrap_or(false))
+            .collect();
+
+        for entry in log_files.iter().take(10) {
+            let path = entry.path();
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                // Extract reasoning chains from the log content
+                for line in content.lines().take(100) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(chains) = extract_reasoning_from_log(&json) {
+                            for chain in chains {
+                                if reasoning_store.store_chain(&chain).is_ok() {
+                                    chains_extracted += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reset counters after extraction
+        self.log_entry_count.store(0, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut last) = self.last_reasoning_extraction.lock() {
+            *last = std::time::Instant::now();
+        }
+
+        info!("ReasoningBank extraction complete: {} chains extracted", chains_extracted);
+        Ok(chains_extracted)
+    }
+
+    /// Query ReasoningBank for relevant reasoning chains
+    pub fn query_reasoning(&self, task: &str, tool_type: &str) -> Vec<ReasoningChain> {
+        match &self.reasoning_store {
+            Some(store) => store.find_similar(task, tool_type, 3).unwrap_or_default(),
+            None => Vec::new(),
+        }
     }
 
     /// Handle an inject request
@@ -337,6 +461,27 @@ fn handle_request(req: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
             Ok(status) => DaemonResponse::ok(Some(status)),
             Err(e) => DaemonResponse::err(format!("Status failed: {}", e)),
         },
+        "reasoning" => {
+            // Trigger ReasoningBank extraction
+            match state.run_reasoning_extraction() {
+                Ok(count) => DaemonResponse::ok(Some(format!("Extracted {} reasoning chains", count))),
+                Err(e) => DaemonResponse::err(format!("Reasoning extraction failed: {}", e)),
+            }
+        }
+        "reasoning_status" => {
+            // Get ReasoningBank status
+            let log_count = state.log_entry_count.load(std::sync::atomic::Ordering::Relaxed);
+            let should_activate = state.should_activate_reasoning();
+            let chain_count = state.reasoning_store
+                .as_ref()
+                .and_then(|s| s.count().ok())
+                .unwrap_or(0);
+
+            DaemonResponse::ok(Some(format!(
+                "ReasoningBank: {} chains | {} pending logs | activation: {}",
+                chain_count, log_count, if should_activate { "ready" } else { "waiting" }
+            )))
+        }
         "ping" => DaemonResponse::ok(Some("pong".to_string())),
         "shutdown" => {
             info!("Shutdown requested");
@@ -344,6 +489,118 @@ fn handle_request(req: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
         }
         _ => DaemonResponse::err(format!("Unknown command: {}", req.command)),
     }
+}
+
+/// Extract reasoning chains from a log JSON entry
+fn extract_reasoning_from_log(json: &serde_json::Value) -> Option<Vec<ReasoningChain>> {
+    let mut chains = Vec::new();
+
+    // Look for thinking blocks in the log
+    if let Some(thinking) = json.get("thinking").and_then(|t| t.as_str()) {
+        if thinking.len() > 50 {
+            // Extract reasoning steps from thinking
+            let steps = extract_steps_from_thinking(thinking);
+            if steps.len() >= 2 {
+                let task = json.get("task")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("Unknown task")
+                    .to_string();
+
+                let tool_type = json.get("tool")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+
+                let success = json.get("success")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(true);
+
+                chains.push(ReasoningChain {
+                    id: 0,
+                    pattern_id: None,
+                    task,
+                    tool_type,
+                    outcome: if success { "success" } else { "failure" }.to_string(),
+                    steps,
+                    summary: thinking.lines().next().unwrap_or("").to_string(),
+                    success_count: if success { 1 } else { 0 },
+                    failure_count: if success { 0 } else { 1 },
+                    created_at: String::new(),
+                });
+            }
+        }
+    }
+
+    // Also look for explicit reasoning blocks
+    if let Some(reasoning) = json.get("reasoning").and_then(|r| r.as_array()) {
+        for step_json in reasoning {
+            if let (Some(step_type), Some(content)) = (
+                step_json.get("type").and_then(|t| t.as_str()),
+                step_json.get("content").and_then(|c| c.as_str()),
+            ) {
+                // Individual reasoning steps can form chains
+                let _ = (step_type, content); // Used in more complete implementation
+            }
+        }
+    }
+
+    if chains.is_empty() {
+        None
+    } else {
+        Some(chains)
+    }
+}
+
+/// Extract reasoning steps from thinking content
+fn extract_steps_from_thinking(thinking: &str) -> Vec<ReasoningStep> {
+    let mut steps = Vec::new();
+    let mut step_num = 0;
+
+    for line in thinking.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.len() < 10 {
+            continue;
+        }
+
+        // Detect thought patterns
+        let (step_type, confidence) = if line.starts_with("I'll")
+            || line.starts_with("Let me")
+            || line.starts_with("First,")
+            || line.starts_with("I need to") {
+            ("thought", 0.8)
+        } else if line.contains("found")
+            || line.contains("noticed")
+            || line.contains("shows")
+            || line.contains("see that") {
+            ("observation", 0.9)
+        } else if line.contains("Running")
+            || line.contains("Executing")
+            || line.contains("Creating")
+            || line.contains("will ") {
+            ("action", 1.0)
+        } else if line.contains("because")
+            || line.contains("since")
+            || line.contains("therefore") {
+            ("reflection", 0.85)
+        } else {
+            continue;
+        };
+
+        steps.push(ReasoningStep {
+            step_number: step_num,
+            step_type: step_type.to_string(),
+            content: line.to_string(),
+            confidence: confidence as f32,
+        });
+        step_num += 1;
+
+        // Limit steps per chain
+        if steps.len() >= 10 {
+            break;
+        }
+    }
+
+    steps
 }
 
 /// Start the daemon server

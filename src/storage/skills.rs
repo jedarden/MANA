@@ -1,9 +1,9 @@
-//! Skill storage and consolidation (enhanced with AgentDB-inspired features)
+//! Skill storage and consolidation
 //!
 //! Skills are higher-level abstractions over patterns. They group
 //! similar patterns together with aggregated success rates.
 //!
-//! Enhanced features (inspired by AgentDB):
+//! Features:
 //! - Skill composition chains: Track skill->skill dependencies
 //! - Usage tracking: How often skills are recommended vs. actually used
 //! - Skill discovery: Find trending and effective skills
@@ -316,7 +316,7 @@ impl SkillStore {
         Ok(())
     }
 
-    // ========== AgentDB-inspired skill discovery and tracking methods ==========
+    // ========== Skill discovery and tracking methods ==========
 
     /// Record that a skill was recommended (for usage tracking)
     #[allow(dead_code)]

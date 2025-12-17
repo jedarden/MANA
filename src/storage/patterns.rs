@@ -72,8 +72,6 @@ impl PatternStore {
     /// - cache_size=4000 pages: ~16MB cache for hot data
     /// - temp_store=MEMORY: Keeps temp tables in RAM
     /// - prepared_statement_cache=16: Caches compiled SQL
-    ///
-    /// Inspired by AgentDB's RuVector caching strategy
     pub fn open_readonly_with_mmap(db_path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(
             db_path,
