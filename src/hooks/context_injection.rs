@@ -245,6 +245,8 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
         "read" => vec!["Read", "Glob", "Grep"],
         "grep" => vec!["Grep", "Read", "Glob"],
         "web" => vec!["WebSearch", "WebFetch"],
+        // Prompt queries all pattern types for comprehensive context
+        "prompt" => vec!["conversation", "reasoning", "Bash", "Edit", "Task", "failure"],
         _ => vec![tool],
     };
 
@@ -255,14 +257,19 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
             if !patterns.is_empty() {
                 debug!("Vector search returned {} patterns in {}µs",
                        patterns.len(), vector_start.elapsed().as_micros());
-                return format_success_patterns(&patterns);
+                // Use prompt-specific formatter for user prompts
+                return if tool == "prompt" {
+                    format_prompt_patterns(&patterns)
+                } else {
+                    format_success_patterns(&patterns)
+                };
             }
             debug!("Vector search returned 0 patterns, falling back to TF-IDF");
         }
     }
 
     // Fallback to TF-IDF search
-    query_patterns_tfidf(&db_path, query, &primary_types)
+    query_patterns_tfidf(&db_path, query, &primary_types, tool)
 }
 
 /// Query patterns using vector similarity search
@@ -351,6 +358,7 @@ fn query_patterns_tfidf(
     db_path: &PathBuf,
     query: &str,
     primary_types: &[&str],
+    tool: &str,
 ) -> Result<ContextInjection> {
     // Open pattern store in read-only mode for faster access
     let db_open_start = Instant::now();
@@ -434,7 +442,12 @@ fn query_patterns_tfidf(
     }
 
     if !patterns.is_empty() {
-        return format_success_patterns(&patterns);
+        // Use prompt-specific formatter for user prompts
+        return if tool == "prompt" {
+            format_prompt_patterns(&patterns)
+        } else {
+            format_success_patterns(&patterns)
+        };
     }
 
     // No patterns found at all
@@ -580,6 +593,63 @@ fn format_failure_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
         let insight = extract_insight(&pattern.context_query);
         context_lines.push(format!("- ⚠️ {}", insight));
         pattern_ids.push(pattern.id);
+    }
+
+    Ok(ContextInjection {
+        context_block: context_lines.join("\n"),
+        patterns_used: pattern_ids,
+    })
+}
+
+/// Format patterns for user prompts - separates successes and failures
+/// Shows relevant successful patterns as hints and failure patterns as warnings
+fn format_prompt_patterns(patterns: &[Pattern]) -> Result<ContextInjection> {
+    let mut context_lines = Vec::new();
+    let mut pattern_ids = Vec::new();
+    let mut seen_insights: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Separate failures from successes
+    let (failures, successes): (Vec<_>, Vec<_>) = patterns
+        .iter()
+        .partition(|p| p.tool_type.eq_ignore_ascii_case("failure") || p.failure_count > p.success_count);
+
+    // Format successful patterns first
+    if !successes.is_empty() {
+        context_lines.push("**Relevant context from successful operations:**".to_string());
+        context_lines.push(String::new());
+
+        for pattern in successes.iter().take(3) {
+            let insight = extract_insight(&pattern.context_query);
+            let normalized = insight.to_lowercase();
+            if seen_insights.contains(&normalized) {
+                continue;
+            }
+            seen_insights.insert(normalized);
+
+            let score = pattern.success_count - pattern.failure_count;
+            context_lines.push(format!("- **{}** (score: {}): {}",
+                pattern.tool_type, score, insight));
+            pattern_ids.push(pattern.id);
+        }
+        context_lines.push(String::new());
+    }
+
+    // Format failure patterns as warnings
+    if !failures.is_empty() {
+        context_lines.push("**Pitfalls to avoid:**".to_string());
+        context_lines.push(String::new());
+
+        for pattern in failures.iter().take(2) {
+            let insight = extract_insight(&pattern.context_query);
+            let normalized = insight.to_lowercase();
+            if seen_insights.contains(&normalized) {
+                continue;
+            }
+            seen_insights.insert(normalized);
+
+            context_lines.push(format!("- ⚠️ {}", insight));
+            pattern_ids.push(pattern.id);
+        }
     }
 
     Ok(ContextInjection {
@@ -770,6 +840,16 @@ fn build_query(tool: &str, input: &ToolInputFields) -> String {
         "web" => {
             // For web tools, build query from the input
             "Web search".to_string()
+        },
+        "prompt" => {
+            // For user prompts, use the prompt/command content directly
+            // This enables semantic search across all pattern types
+            let prompt_text = input.prompt.as_deref()
+                .or(input.command.as_deref())
+                .or(input.description.as_deref())
+                .unwrap_or("");
+            // Return the raw prompt for semantic matching
+            prompt_text.to_string()
         },
         _ => format!("Tool: {}", tool),
     }
