@@ -243,6 +243,12 @@ impl DaemonState {
 
     /// Handle an inject request
     pub fn handle_inject(&self, tool: &str, input: &str) -> Result<String> {
+        // For "prompt" tool type, skip daemon and use direct path
+        // which has comprehensive multi-type querying and formatting
+        if tool == "prompt" {
+            return Err(anyhow::anyhow!("prompt tool type uses direct path"));
+        }
+
         // Map tool argument to database tool_types
         let db_tool_type = match tool {
             "edit" => "Edit",

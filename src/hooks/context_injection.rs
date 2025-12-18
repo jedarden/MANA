@@ -70,9 +70,15 @@ const MIN_RELEVANCE_SCORE: usize = 0;
 /// This ensures we don't show shell patterns for Rust queries, etc.
 const MIN_TECH_STACK_SIMILARITY: f64 = 0.35;
 
+/// Minimum similarity for prompt tool type (more lenient for semantic matching)
+const MIN_PROMPT_SIMILARITY: f64 = 0.15;
+
 /// Minimum vector similarity score for pattern inclusion
 /// Vector similarity is typically 0.0-1.0, with 0.5+ being reasonably related
 const MIN_VECTOR_SIMILARITY: f32 = 0.4;
+
+/// Minimum vector similarity for prompt tool type (more lenient)
+const MIN_PROMPT_VECTOR_SIMILARITY: f32 = 0.25;
 
 /// Whether to prefer vector search over TF-IDF when embeddings are available
 const USE_VECTOR_SEARCH: bool = true;
@@ -253,7 +259,7 @@ fn query_patterns(tool: &str, query: &str) -> Result<ContextInjection> {
     // Try vector search first if enabled and query is not empty
     if USE_VECTOR_SEARCH && !query.is_empty() {
         let vector_start = Instant::now();
-        if let Ok(patterns) = query_patterns_vector(&mana_dir, &db_path, query, &primary_types) {
+        if let Ok(patterns) = query_patterns_vector(&mana_dir, &db_path, query, &primary_types, tool) {
             if !patterns.is_empty() {
                 debug!("Vector search returned {} patterns in {}µs",
                        patterns.len(), vector_start.elapsed().as_micros());
@@ -278,6 +284,7 @@ fn query_patterns_vector(
     db_path: &PathBuf,
     query: &str,
     primary_types: &[&str],
+    tool: &str,
 ) -> Result<Vec<Pattern>> {
     // Check if vector index exists
     let index_path = mana_dir.join("vectors.usearch");
@@ -305,6 +312,13 @@ fn query_patterns_vector(
 
     debug!("Vector search found {} raw matches", vector_matches.len());
 
+    // Use lower threshold for prompt tool type (semantic matching on free-form text)
+    let min_similarity = if tool == "prompt" {
+        MIN_PROMPT_VECTOR_SIMILARITY
+    } else {
+        MIN_VECTOR_SIMILARITY
+    };
+
     // Filter by tool type and minimum similarity
     let mut scored_patterns: Vec<(Pattern, f64)> = vector_matches
         .into_iter()
@@ -313,7 +327,7 @@ fn query_patterns_vector(
             let tool_match = primary_types.iter()
                 .any(|t| m.tool_type.eq_ignore_ascii_case(t));
             // Filter by minimum similarity
-            let sim_match = m.similarity >= MIN_VECTOR_SIMILARITY;
+            let sim_match = m.similarity >= min_similarity;
             tool_match && sim_match
         })
         .map(|m| {
@@ -383,6 +397,13 @@ fn query_patterns_tfidf(
     if !query.is_empty() {
         debug!("TF-IDF scoring {} patterns for query: {}", patterns.len(), query);
 
+        // Use lower threshold for prompt tool type (semantic matching on free-form text)
+        let min_similarity = if tool == "prompt" {
+            MIN_PROMPT_SIMILARITY
+        } else {
+            MIN_TECH_STACK_SIMILARITY
+        };
+
         // Use TF-IDF style similarity scoring for better relevance
         // Process patterns in batches for better cache locality
         let mut scored_patterns: Vec<(Pattern, f64)> = patterns
@@ -391,7 +412,7 @@ fn query_patterns_tfidf(
                 let similarity = calculate_similarity(query, &p.context_query);
 
                 // Early filter: skip patterns below threshold
-                if similarity < MIN_TECH_STACK_SIMILARITY {
+                if similarity < min_similarity {
                     return None;
                 }
 
