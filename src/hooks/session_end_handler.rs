@@ -2,22 +2,30 @@
 //!
 //! Parses recent JSONL logs, updates accumulator state, and triggers
 //! learning when trajectory count reaches threshold.
+//!
+//! Also triggers reflection when log backlog exceeds reflection threshold.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::learning;
+use crate::reflection;
 
 const DEFAULT_THRESHOLD: u32 = 15;
+/// Threshold for triggering reflection (matches reflection config default)
+const REFLECTION_THRESHOLD: u32 = 50;
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AccumulatorState {
     pub trajectory_count: u32,
     pub pending_files: Vec<PathBuf>,
     pub last_learning_cycle: Option<DateTime<Utc>>,
+    pub last_reflection_cycle: Option<DateTime<Utc>>,
     pub last_file_positions: std::collections::HashMap<PathBuf, u64>,
     pub retry_count: u32,
     pub version: u32,
@@ -84,6 +92,9 @@ pub async fn session_end() -> Result<()> {
             Ok(result) => {
                 info!("Learning complete: {} patterns created", result.patterns_created);
 
+                // Check if reflection should be triggered based on backlog
+                let should_reflect = should_trigger_reflection(&state);
+
                 // Reset state
                 state.trajectory_count = 0;
                 state.pending_files.clear();
@@ -92,6 +103,16 @@ pub async fn session_end() -> Result<()> {
 
                 // Spawn background consolidation (fire-and-forget)
                 learning::spawn_consolidation()?;
+
+                // Spawn reflection if threshold met
+                if should_reflect {
+                    info!("Reflection threshold reached, spawning background reflection");
+                    if let Err(e) = spawn_reflection(&mana_dir) {
+                        warn!("Failed to spawn reflection: {}", e);
+                    } else {
+                        state.last_reflection_cycle = Some(Utc::now());
+                    }
+                }
             }
             Err(e) => {
                 warn!("Foreground learning failed: {}", e);
@@ -237,4 +258,68 @@ fn count_new_trajectories(
     }
 
     Ok((total_new, updated_positions))
+}
+
+/// Check if reflection should be triggered based on log backlog
+fn should_trigger_reflection(state: &AccumulatorState) -> bool {
+    if state.trajectory_count >= REFLECTION_THRESHOLD {
+        debug!("Reflection trigger: {} >= {} trajectories",
+               state.trajectory_count, REFLECTION_THRESHOLD);
+        return true;
+    }
+    false
+}
+
+/// Spawn background reflection process
+///
+/// Initializes reflection tables if needed and runs a reflection cycle
+/// in a detached process to avoid blocking session end.
+fn spawn_reflection(mana_dir: &std::path::Path) -> Result<()> {
+    debug!("Spawning background reflection");
+
+    // Get path to current binary
+    let current_exe = std::env::current_exe()?;
+
+    // First, ensure reflection tables are initialized
+    let db_path = mana_dir.join("metadata.sqlite");
+    if db_path.exists() {
+        if let Ok(conn) = Connection::open(&db_path) {
+            // Check if reflection tables exist
+            let tables_exist: bool = conn.query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='reflection_verdicts'",
+                [],
+                |row| row.get(0),
+            ).unwrap_or(false);
+
+            if !tables_exist {
+                info!("Auto-initializing reflection tables");
+                if let Err(e) = reflection::init_reflection_tables(&conn) {
+                    warn!("Failed to initialize reflection tables: {}", e);
+                    // Continue anyway - the reflect command will try again
+                }
+            }
+        }
+    }
+
+    // Spawn detached reflection process
+    match Command::new(&current_exe)
+        .arg("reflect")
+        .arg("run")
+        .arg("--trigger")
+        .arg("auto-backlog")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => {
+            info!("Background reflection spawned");
+            Ok(())
+        }
+        Err(e) => {
+            warn!("Failed to spawn reflection: {}", e);
+            // Don't fail session-end if reflection can't spawn
+            Ok(())
+        }
+    }
 }

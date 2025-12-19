@@ -595,14 +595,11 @@ fn context_matches(tool_context: &str, pattern_context: &str) -> bool {
 fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
     let mut patterns = Vec::new();
 
-    // Find tool results with errors
+    // Find tool results with errors - trust the is_error flag from Claude Code
     for result in &trajectory.tool_results {
-        if result.is_error || result.content.to_lowercase().contains("error") {
-            // Extract the key error message (only if actionable)
-            let error_msg = match extract_error_message(&result.content) {
-                Some(msg) => msg,
-                None => continue,  // Skip non-actionable errors
-            };
+        if result.is_error {
+            // Use first meaningful line of error content, truncated
+            let error_msg = extract_first_error_line(&result.content);
 
             // Extract task category (first few words)
             let task_category = extract_task_category(&trajectory.user_query);
@@ -736,78 +733,34 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-/// Extract key error message from tool result
+/// Extract first meaningful error line from tool result content
 ///
-/// Returns None if no actionable error message is found
-fn extract_error_message(content: &str) -> Option<String> {
-    let lines: Vec<&str> = content.lines().collect();
-
-    // Skip if content looks like noise (line numbers, code output, etc.)
-    if is_noise_content(content) {
-        return None;
-    }
-
-    // Look for specific actionable error patterns
-    for line in &lines {
+/// Trusts is_error flag - no heuristic filtering of error types
+fn extract_first_error_line(content: &str) -> String {
+    for line in content.lines() {
         let trimmed = line.trim();
-        let lower = trimmed.to_lowercase();
 
-        // Skip line number prefixes (e.g., "123→", "1419→")
+        // Skip empty lines and line number prefixes
+        if trimmed.is_empty() {
+            continue;
+        }
         if trimmed.chars().take_while(|c| c.is_ascii_digit()).count() > 0
            && trimmed.contains('→') {
             continue;
         }
 
-        // Skip short lines
-        if trimmed.len() < 15 {
+        // Skip very short lines
+        if trimmed.len() < 10 {
             continue;
         }
 
-        // Look for actionable error messages
-        if lower.contains("error:") || lower.contains("failed:")
-           || lower.contains("cannot find") || lower.contains("no such file")
-           || lower.contains("permission denied") || lower.contains("command not found")
-           || lower.contains("syntax error") || lower.contains("type error")
-           || lower.contains("does not exist") || lower.contains("undefined")
-           || lower.contains("not found") {
-            // Remove noisy prefixes
-            let clean = clean_error_line(trimmed);
-            if clean.len() >= 20 && !is_noise_content(&clean) {
-                return Some(truncate(&clean, 120).to_string());
-            }
-        }
+        // Return first meaningful line, cleaned and truncated
+        let clean = clean_error_line(trimmed);
+        return truncate(&clean, 150).to_string();
     }
 
-    None
-}
-
-/// Check if content is likely noise (code output, line numbers, etc.)
-fn is_noise_content(content: &str) -> bool {
-    let lower = content.to_lowercase();
-
-    // Skip if it's mostly line numbers/code output
-    if content.chars().filter(|c| c.is_ascii_digit() || *c == '→' || *c == '│').count()
-       > content.len() / 4 {
-        return true;
-    }
-
-    // Skip console.log/print statements
-    if lower.contains("console.log") || lower.contains("console.err")
-       || lower.contains("print(") {
-        return true;
-    }
-
-    // Skip generic tool errors
-    if lower.contains("<tool_use_error>") && !lower.contains("command") {
-        return true;
-    }
-
-    // Skip markdown/formatting
-    if content.starts_with('#') || content.starts_with('-') || content.starts_with('*') {
-        return true;
-    }
-
-    false
+    // Fallback: truncate entire content
+    truncate(content, 150).to_string()
 }
 
 /// Clean up error line by removing noise prefixes
