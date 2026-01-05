@@ -175,6 +175,17 @@ pub fn inject_context(tool: &str) -> Result<()> {
               elapsed, INJECTION_TIMEOUT_MS, stdin_time, parse_time, query_time);
     }
 
+    // First, inject any high-frequency user instructions (preferences/directives)
+    // These are injected BEFORE tool-specific context to prime Claude's behavior
+    let instructions_block = query_instruction_patterns();
+    if !instructions_block.is_empty() {
+        debug!("Injecting user instructions");
+        println!("<mana-instructions>");
+        println!("{}", instructions_block);
+        println!("</mana-instructions>");
+        println!();
+    }
+
     // If we have context, inject it as a system-reminder style block
     if !context.context_block.is_empty() {
         debug!("Injecting {} patterns in {}ms (stdin: {}µs, parse: {}µs, query: {}µs)",
@@ -886,4 +897,84 @@ fn extract_filename(path: &str) -> &str {
 fn extract_extension(path: Option<&str>) -> &str {
     path.and_then(|p| p.rsplit('.').next())
         .unwrap_or("unknown")
+}
+
+// ============================================================================
+// Instruction Pattern Injection
+// ============================================================================
+
+/// Maximum instructions to inject at context start
+const MAX_INSTRUCTIONS: usize = 3;
+
+/// Query and format high-frequency instruction patterns for context injection
+///
+/// Returns a formatted string of user preferences/directives that have been
+/// detected across multiple sessions. These are injected BEFORE tool-specific
+/// context to prime Claude's behavior based on learned user preferences.
+fn query_instruction_patterns() -> String {
+    let mana_dir = match get_mana_dir() {
+        Ok(dir) => dir,
+        Err(_) => return String::new(),
+    };
+
+    let db_path = mana_dir.join("metadata.sqlite");
+    if !db_path.exists() {
+        return String::new();
+    }
+
+    let store = match PatternStore::open_readonly(&db_path) {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+
+    let instructions = match store.get_high_frequency_instructions(MAX_INSTRUCTIONS) {
+        Ok(i) => i,
+        Err(_) => return String::new(),
+    };
+
+    if instructions.is_empty() {
+        return String::new();
+    }
+
+    let mut output = Vec::new();
+    output.push("**User Preferences (from repeated instructions):**".to_string());
+    output.push(String::new());
+
+    for instruction in &instructions {
+        // Extract the instruction text from context_query
+        let instruction_text = extract_instruction_text(&instruction.context_query);
+
+        // Add emphasis indicator based on frequency weight
+        let emphasis = if instruction.frequency_weight > 2.0 {
+            " ⚡ (strongly emphasized)"
+        } else if instruction.frequency_weight > 1.5 {
+            " (emphasized)"
+        } else {
+            ""
+        };
+
+        // Show session count for transparency
+        let session_info = if instruction.session_count > 1 {
+            format!(" [seen in {} sessions]", instruction.session_count)
+        } else {
+            String::new()
+        };
+
+        output.push(format!("- {}{}{}", instruction_text, emphasis, session_info));
+    }
+
+    output.join("\n")
+}
+
+/// Extract the instruction text from a pattern's context_query
+fn extract_instruction_text(context_query: &str) -> String {
+    // Context query format: "User instruction: <text>\nType: <type>\nContext: <context>"
+    for line in context_query.lines() {
+        if let Some(instruction) = line.strip_prefix("User instruction: ") {
+            return instruction.to_string();
+        }
+    }
+
+    // Fallback: use first line
+    context_query.lines().next().unwrap_or(context_query).to_string()
 }

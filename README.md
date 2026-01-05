@@ -435,12 +435,13 @@ dimensions = 384
 
 | Document | Description |
 |----------|-------------|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Core mission & system design |
 | [CAUSAL_SYSTEM_SUMMARY.md](docs/CAUSAL_SYSTEM_SUMMARY.md) | Causal reasoning overview |
 | [TRANSFER_QUICKSTART.md](docs/TRANSFER_QUICKSTART.md) | Transfer learning guide |
 | [HEALTH_MONITORING.md](docs/HEALTH_MONITORING.md) | Health & pruning |
 | [SIMD_INTEGRATION.md](docs/SIMD_INTEGRATION.md) | SIMD acceleration |
 | [PROVENANCE_IMPLEMENTATION.md](docs/PROVENANCE_IMPLEMENTATION.md) | Explainability system |
-| [CHANGELOG.md](CHANGELOG.md) | Version history |
+| [CHANGELOG.md](docs/CHANGELOG.md) | Version history |
 
 ---
 

@@ -1836,4 +1836,114 @@ mod tests {
         assert!(!summary.is_empty());
         assert!(summary.contains("Let me") || summary.contains("First") || summary.contains("Looking"));
     }
+
+    // ========================================================================
+    // Instruction Pattern Tests
+    // ========================================================================
+
+    #[test]
+    fn test_detect_instructions_with_directive_keywords() {
+        let message = "Always use TypeScript for new files. Never commit directly to main.";
+        let instructions = detect_instructions(message);
+        assert_eq!(instructions.len(), 2);
+        assert!(instructions[0].contains("TypeScript"));
+        assert!(instructions[1].contains("commit") || instructions[1].contains("main"));
+    }
+
+    #[test]
+    fn test_detect_instructions_with_imperative_verbs() {
+        let message = "Run the tests before pushing. Use conventional commits for all changes.";
+        let instructions = detect_instructions(message);
+        assert_eq!(instructions.len(), 2);
+        assert!(instructions[0].contains("tests") || instructions[0].contains("Run"));
+        assert!(instructions[1].contains("conventional") || instructions[1].contains("commits"));
+    }
+
+    #[test]
+    fn test_detect_instructions_filters_short_content() {
+        let message = "Fix it. Run tests before pushing code to the repository.";
+        let instructions = detect_instructions(message);
+        // "Fix it" is too short (< 10 chars), should be filtered
+        assert_eq!(instructions.len(), 1);
+        assert!(instructions[0].contains("tests") || instructions[0].contains("pushing"));
+    }
+
+    #[test]
+    fn test_detect_instructions_filters_code_blocks() {
+        let message = "Always use proper error handling.\n```rust\nfn main() {}\n```\nNever ignore errors.";
+        let instructions = detect_instructions(message);
+        // Should get 2 instructions, skipping the code block
+        assert!(instructions.len() >= 1);
+        assert!(instructions.iter().all(|i| !i.contains("fn main")));
+    }
+
+    #[test]
+    fn test_normalize_instruction_removes_please() {
+        assert_eq!(normalize_instruction("Please use TypeScript"), "Use TypeScript");
+        assert_eq!(normalize_instruction("Can you always run tests"), "Always run tests");
+        assert_eq!(normalize_instruction("Could you follow the style guide"), "Follow the style guide");
+    }
+
+    #[test]
+    fn test_normalize_instruction_capitalizes() {
+        assert_eq!(normalize_instruction("use typescript"), "Use typescript");
+    }
+
+    #[test]
+    fn test_normalize_instruction_removes_trailing_punctuation() {
+        assert_eq!(normalize_instruction("Always use TypeScript."), "Always use TypeScript");
+        assert_eq!(normalize_instruction("Run tests!"), "Run tests");
+    }
+
+    #[test]
+    fn test_classify_instruction_type() {
+        assert_eq!(classify_instruction_type("Run tests before committing"), "testing");
+        assert_eq!(classify_instruction_type("Use TypeScript for all code"), "coding_style");
+        assert_eq!(classify_instruction_type("Use ESLint for formatting"), "coding_style");
+        assert_eq!(classify_instruction_type("Always commit with descriptive messages"), "version_control");
+        assert_eq!(classify_instruction_type("Push to feature branches first"), "version_control");
+        assert_eq!(classify_instruction_type("Handle all errors properly"), "error_handling");
+        assert_eq!(classify_instruction_type("Add documentation comments"), "documentation");
+        assert_eq!(classify_instruction_type("Build before deploying"), "build_deploy");
+        assert_eq!(classify_instruction_type("Some random instruction"), "general");
+    }
+
+    #[test]
+    fn test_extract_instruction_patterns() {
+        let trajectory = Trajectory {
+            session_id: "test-session".into(),
+            user_query: "Fix the bug and always run tests before committing".into(),
+            user_messages: vec![
+                "Please use TypeScript for new files".into(),
+                "Make sure to follow the existing code style".into(),
+            ],
+            assistant_content: "I'll fix the bug now".into(),
+            verdict: Some(Verdict { success: true, confidence: 0.9 }),
+            ..Default::default()
+        };
+
+        let patterns = extract_instruction_patterns(&trajectory);
+
+        // Should extract instructions from both user_messages and user_query
+        assert!(!patterns.is_empty());
+        assert!(patterns.iter().all(|p| p.tool_type == "instruction"));
+
+        // Check that patterns have correct structure
+        for pattern in &patterns {
+            assert!(pattern.context_query.contains("User instruction:"));
+            assert!(pattern.context_query.contains("Type:"));
+            assert!(!pattern.pattern_hash.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_extract_task_category_from_query() {
+        assert_eq!(extract_task_category_from_query("Fix the bug in main.rs"), "bug_fix");
+        assert_eq!(extract_task_category_from_query("Add a new feature"), "feature");
+        assert_eq!(extract_task_category_from_query("Implement login"), "feature");
+        assert_eq!(extract_task_category_from_query("Refactor the database module"), "refactoring");
+        assert_eq!(extract_task_category_from_query("Run the tests"), "testing");
+        assert_eq!(extract_task_category_from_query("Deploy to production"), "deployment");
+        assert_eq!(extract_task_category_from_query("Do something random"), "general");
+    }
 }
