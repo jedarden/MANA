@@ -27,6 +27,8 @@ use tracing::{debug, error, info, warn};
 use crate::embeddings::EmbeddingStore;
 use crate::storage::calculate_similarity;
 use crate::storage::{ReasoningStore, ReasoningChain, ReasoningStep};
+use crate::storage::{init_global_pool, get_read_connection};
+use crate::storage::{HealthMonitor, PruningConfig};
 
 /// Socket path for daemon communication
 pub fn socket_path() -> PathBuf {
@@ -113,14 +115,23 @@ pub struct DaemonState {
     pub log_entry_count: std::sync::atomic::AtomicUsize,
     /// Last reasoning extraction timestamp
     pub last_reasoning_extraction: std::sync::Mutex<std::time::Instant>,
+    /// Health monitor for periodic pruning
+    pub health_monitor: HealthMonitor,
+    /// Last health check timestamp
+    pub last_health_check: std::sync::Mutex<std::time::Instant>,
 }
 
 impl DaemonState {
     pub fn new(mana_dir: &Path) -> Result<Self> {
-        info!("Loading pattern store...");
+        info!("Loading pattern store with connection pooling...");
         let db_path = mana_dir.join("metadata.sqlite");
 
-        // Open connection with mmap for fast repeated queries
+        // Initialize global connection pool for concurrent access
+        init_global_pool(&db_path)?;
+        info!("Connection pool initialized");
+
+        // Keep a single read-only connection for this state object
+        // (for backwards compatibility with existing code)
         let conn = Connection::open_with_flags(
             &db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -157,7 +168,44 @@ impl DaemonState {
             reasoning_config: ReasoningBankConfig::default(),
             log_entry_count: std::sync::atomic::AtomicUsize::new(0),
             last_reasoning_extraction: std::sync::Mutex::new(std::time::Instant::now()),
+            health_monitor: HealthMonitor::new(PruningConfig::default()),
+            last_health_check: std::sync::Mutex::new(std::time::Instant::now()),
         })
+    }
+
+    /// Check if health pruning should run (every 6 hours)
+    pub fn should_run_health_check(&self) -> bool {
+        let elapsed = self.last_health_check
+            .lock()
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+
+        // Run health check every 6 hours
+        elapsed >= 6 * 3600
+    }
+
+    /// Run health check and auto-pruning if needed
+    pub fn run_health_check(&self) -> Result<usize> {
+        info!("Running periodic health check...");
+
+        // Note: We need a writable connection for pruning
+        // The daemon's conn is read-only, so we need to open a new one
+        let db_path = self.mana_dir.join("metadata.sqlite");
+        let write_conn = Connection::open(&db_path)?;
+
+        let result = self.health_monitor.auto_prune(&write_conn)?;
+
+        // Update last check time
+        if let Ok(mut last) = self.last_health_check.lock() {
+            *last = std::time::Instant::now();
+        }
+
+        info!("Health check complete: deleted={}, decayed={}, health={:.1}%",
+              result.patterns_deleted,
+              result.patterns_decayed,
+              result.after_health.health_score * 100.0);
+
+        Ok(result.patterns_deleted + result.patterns_decayed)
     }
 
     /// Check if ReasoningBank should be activated based on accumulated logs
@@ -339,7 +387,9 @@ impl DaemonState {
 
     /// Handle a status request
     pub fn handle_status(&self) -> Result<String> {
-        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM patterns", [], |row| row.get(0))?;
+        // Use pooled connection for concurrent access
+        let conn = get_read_connection()?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM patterns", [], |row| row.get(0))?;
 
         let embed_status = if let Some(ref store) = self.embedding_store {
             let status = store.status()?;
@@ -348,9 +398,18 @@ impl DaemonState {
             "not available".to_string()
         };
 
+        // Get pool stats
+        let pool_info = if let Some((read_stats, write_stats)) = crate::storage::get_pool_stats() {
+            format!(" | Pool: R({}/{}) W({}/{})",
+                read_stats.connections, read_stats.max_size,
+                write_stats.connections, write_stats.max_size)
+        } else {
+            String::new()
+        };
+
         Ok(format!(
-            "Daemon running | {} patterns | Embeddings: {}",
-            count, embed_status
+            "Daemon running | {} patterns | Embeddings: {}{}",
+            count, embed_status, pool_info
         ))
     }
 }
@@ -487,6 +546,36 @@ fn handle_request(req: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
                 "ReasoningBank: {} chains | {} pending logs | activation: {}",
                 chain_count, log_count, if should_activate { "ready" } else { "waiting" }
             )))
+        }
+        "health_check" => {
+            // Trigger health check and pruning
+            match state.run_health_check() {
+                Ok(affected) => DaemonResponse::ok(Some(format!(
+                    "Health check complete: {} patterns affected", affected
+                ))),
+                Err(e) => DaemonResponse::err(format!("Health check failed: {}", e)),
+            }
+        }
+        "health_status" => {
+            // Get health status without pruning
+            let db_path = state.mana_dir.join("metadata.sqlite");
+            match Connection::open(&db_path) {
+                Ok(conn) => {
+                    match state.health_monitor.check_health(&conn) {
+                        Ok(status) => {
+                            let should_run = state.should_run_health_check();
+                            DaemonResponse::ok(Some(format!(
+                                "Health: {:.1}% ({}) | Next check: {}",
+                                status.health_score * 100.0,
+                                if status.is_healthy { "healthy" } else { "unhealthy" },
+                                if should_run { "now" } else { "later" }
+                            )))
+                        }
+                        Err(e) => DaemonResponse::err(format!("Failed to check health: {}", e)),
+                    }
+                }
+                Err(e) => DaemonResponse::err(format!("Failed to open database: {}", e)),
+            }
         }
         "ping" => DaemonResponse::ok(Some("pong".to_string())),
         "shutdown" => {
@@ -648,6 +737,9 @@ pub fn start_daemon(mana_dir: &Path) -> Result<()> {
         .set_nonblocking(true)
         .context("Failed to set non-blocking")?;
 
+    // Counter for periodic health checks
+    let mut loop_count = 0;
+
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _)) => {
@@ -660,6 +752,27 @@ pub fn start_daemon(mana_dir: &Path) -> Result<()> {
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // No connection pending, sleep briefly
                 std::thread::sleep(Duration::from_millis(100));
+
+                // Check health every ~60 seconds (600 iterations * 100ms)
+                loop_count += 1;
+                if loop_count >= 600 {
+                    loop_count = 0;
+
+                    // Run health check if it's time
+                    if state.should_run_health_check() {
+                        info!("Running scheduled health check...");
+                        match state.run_health_check() {
+                            Ok(affected) => {
+                                if affected > 0 {
+                                    info!("Health check affected {} patterns", affected);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Scheduled health check failed: {}", e);
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 error!("Accept error: {}", e);

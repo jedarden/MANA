@@ -288,7 +288,16 @@ fn consolidate_to_skills(db_path: &Path) -> Result<usize> {
     consolidate_patterns_to_skills(db_path)
 }
 
-/// Merge patterns with very high similarity (>90%)
+/// Similarity threshold for regular patterns (tool calls, failures, etc.)
+const REGULAR_SIMILARITY_THRESHOLD: f64 = 0.90;
+
+/// Lower similarity threshold for instruction patterns
+/// Instructions like "always use TypeScript" and "use TypeScript for all code"
+/// should consolidate despite wording differences
+const INSTRUCTION_SIMILARITY_THRESHOLD: f64 = 0.70;
+
+/// Merge patterns with high similarity
+/// Uses 90% threshold for regular patterns, 70% for instructions
 fn merge_similar_patterns(db_path: &Path) -> Result<usize> {
     let conn = Connection::open(db_path)?;
 
@@ -316,7 +325,14 @@ fn merge_similar_patterns(db_path: &Path) -> Result<usize> {
     let mut merged_count = 0;
     let mut to_delete: Vec<i64> = Vec::new();
 
-    for (_tool_type, type_patterns) in by_type {
+    for (tool_type, type_patterns) in by_type {
+        // Use lower threshold for instruction patterns to allow more variation in wording
+        let similarity_threshold = if tool_type == "instruction" {
+            INSTRUCTION_SIMILARITY_THRESHOLD
+        } else {
+            REGULAR_SIMILARITY_THRESHOLD
+        };
+
         // Compare each pattern with others in same group
         let mut merged_into: HashMap<i64, i64> = HashMap::new();
 
@@ -338,15 +354,21 @@ fn merge_similar_patterns(db_path: &Path) -> Result<usize> {
 
                 let similarity = calculate_similarity(ctx_i, ctx_j);
 
-                // Very high similarity = merge (90% threshold for consolidation)
-                if similarity > 0.90 {
-                    debug!("Merging pattern {} into {} (similarity: {:.2})", id_j, id_i, similarity);
+                // Merge if above threshold
+                if similarity > similarity_threshold {
+                    debug!("Merging {} pattern {} into {} (similarity: {:.2})",
+                           tool_type, id_j, id_i, similarity);
 
                     // Merge counts into the first pattern
                     conn.execute(
                         "UPDATE patterns SET success_count = success_count + ?, failure_count = failure_count + ? WHERE id = ?",
                         params![success_j, failure_j, id_i],
                     )?;
+
+                    // For instruction patterns, also merge session tracking
+                    if tool_type == "instruction" {
+                        merge_instruction_sessions(&conn, id_i, id_j)?;
+                    }
 
                     // Mark for deletion
                     to_delete.push(id_j);
@@ -363,6 +385,70 @@ fn merge_similar_patterns(db_path: &Path) -> Result<usize> {
     }
 
     Ok(merged_count)
+}
+
+/// Merge session tracking data when consolidating instruction patterns
+fn merge_instruction_sessions(conn: &Connection, keep_id: i64, merge_id: i64) -> Result<()> {
+    use std::collections::HashSet;
+
+    // Get session data from both patterns
+    let keep_sessions: Option<String> = conn.query_row(
+        "SELECT session_ids FROM patterns WHERE id = ?",
+        params![keep_id],
+        |row| row.get(0),
+    ).ok().flatten();
+
+    let merge_sessions: Option<String> = conn.query_row(
+        "SELECT session_ids FROM patterns WHERE id = ?",
+        params![merge_id],
+        |row| row.get(0),
+    ).ok().flatten();
+
+    // Combine session sets
+    let mut combined: HashSet<String> = keep_sessions
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    if let Some(merge_str) = merge_sessions {
+        if let Ok(merge_set) = serde_json::from_str::<HashSet<String>>(&merge_str) {
+            combined.extend(merge_set);
+        }
+    }
+
+    // Update session count and frequency weight
+    let new_session_count = combined.len() as i64;
+    let total_occurrences: i64 = conn.query_row(
+        "SELECT success_count + failure_count FROM patterns WHERE id = ?",
+        params![keep_id],
+        |row| row.get(0),
+    ).unwrap_or(1);
+
+    // Recalculate frequency weight
+    let occurrence_factor = (1.0 + total_occurrences as f64).ln();
+    let session_factor = if new_session_count > 1 {
+        1.0 + (new_session_count as f64).ln() * 0.5
+    } else {
+        1.0
+    };
+    let new_weight = occurrence_factor * session_factor;
+
+    conn.execute(
+        r#"
+        UPDATE patterns
+        SET session_count = ?,
+            frequency_weight = ?,
+            session_ids = ?
+        WHERE id = ?
+        "#,
+        params![
+            new_session_count,
+            new_weight,
+            serde_json::to_string(&combined).unwrap_or_default(),
+            keep_id
+        ],
+    )?;
+
+    Ok(())
 }
 
 /// Decay patterns that haven't been used recently

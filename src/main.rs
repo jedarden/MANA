@@ -2,6 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+use std::path::PathBuf;
+use rusqlite::{Connection, params};
 
 // Type aliases for complex types (clippy::type_complexity)
 type VerdictRow = (String, Option<i64>, String, f64, Option<String>, String);
@@ -85,7 +87,10 @@ enum Commands {
     Relearn,
 
     /// Run performance benchmarks
-    Bench,
+    Bench {
+        #[command(subcommand)]
+        action: Option<BenchAction>,
+    },
 
     /// Manage vector embeddings for semantic search
     Embed {
@@ -150,6 +155,139 @@ enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
+
+    /// Memory health monitoring and pruning
+    Health {
+        #[command(subcommand)]
+        action: Option<HealthAction>,
+    },
+
+    /// Trajectory failure analysis
+    Analyze {
+        #[command(subcommand)]
+        action: AnalyzeAction,
+    },
+
+    /// Transfer learning between sessions and projects
+    Transfer {
+        #[command(subcommand)]
+        action: TransferAction,
+    },
+
+    /// Explainability and provenance tracking
+    Provenance {
+        #[command(subcommand)]
+        action: ProvenanceAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum TransferAction {
+    /// Transfer patterns from a source to destination
+    From {
+        /// Source: path to database, project directory, or session ID
+        source: String,
+        /// Destination database path (defaults to current .mana)
+        #[arg(long)]
+        to: Option<String>,
+        /// Minimum pattern score to transfer
+        #[arg(long, default_value = "0")]
+        min_score: i64,
+        /// Minimum success rate (0.0-1.0)
+        #[arg(long, default_value = "0.5")]
+        min_success_rate: f64,
+        /// Preview mode (don't actually transfer)
+        #[arg(long)]
+        preview: bool,
+        /// Filter by tool types (comma-separated)
+        #[arg(long)]
+        tool_types: Option<String>,
+        /// Domain keywords for filtering (comma-separated)
+        #[arg(long)]
+        domains: Option<String>,
+        /// Transfer only top N percentile (e.g., 0.9 for top 10%)
+        #[arg(long)]
+        top: Option<f64>,
+        /// Adaptation strategy: direct, contextualize, generalize, specialize
+        #[arg(long, default_value = "direct")]
+        adapt: String,
+        /// Target domain for adaptation
+        #[arg(long)]
+        target_domain: Option<String>,
+    },
+
+    /// List transferable patterns from a source
+    List {
+        /// Source: path to database, project directory, or session ID
+        source: String,
+        /// Maximum number of patterns to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+        /// Minimum transferability score (0.0-1.0)
+        #[arg(long, default_value = "0.0")]
+        min_score: f64,
+    },
+
+    /// Transfer RL policy (Q-table) from source
+    Policy {
+        /// Source: path to database, project directory, or session ID
+        source: String,
+        /// Destination database path (defaults to current .mana)
+        #[arg(long)]
+        to: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProvenanceAction {
+    /// Explain why a pattern was selected
+    Explain {
+        /// Pattern ID to explain
+        pattern_id: i64,
+        /// Optional context for the explanation
+        #[arg(long)]
+        context: Option<String>,
+    },
+
+    /// Show full provenance chain for a pattern
+    Show {
+        /// Pattern ID to show provenance for
+        pattern_id: i64,
+    },
+
+    /// Justify a recent action
+    Justify {
+        /// Action description
+        action: String,
+        /// Pattern ID that was used (optional)
+        #[arg(long)]
+        pattern_id: Option<i64>,
+    },
+
+    /// Show recent reasoning chains
+    Chains {
+        /// Number of chains to show
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Verify provenance certificate integrity
+    Verify {
+        /// Pattern ID to verify
+        pattern_id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum AnalyzeAction {
+    /// Analyze a specific trajectory for failures
+    Trajectory {
+        /// Session ID to analyze
+        session_id: String,
+    },
+
+    /// Show failure statistics across all trajectories
+    Stats,
 }
 
 #[derive(Subcommand)]
@@ -242,6 +380,19 @@ enum PeerAction {
     SyncWith {
         /// Peer address to sync with
         address: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BenchAction {
+    /// Benchmark SIMD vs naive distance calculations
+    Simd {
+        /// Vector dimensions to test
+        #[arg(long, default_value = "384")]
+        dimensions: usize,
+        /// Number of iterations
+        #[arg(long, default_value = "10000")]
+        iterations: usize,
     },
 }
 
@@ -352,6 +503,16 @@ enum DaemonAction {
 
     /// Show daemon status
     Status,
+}
+
+#[derive(Subcommand)]
+enum HealthAction {
+    /// Run automatic pruning based on health conditions
+    AutoPrune {
+        /// Show what would be pruned without actually pruning
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -469,8 +630,32 @@ async fn run_async_main(cli: Cli) -> Result<()> {
         Commands::Relearn => {
             storage::relearn().await?;
         }
-        Commands::Bench => {
-            bench::run_benchmarks().await?;
+        Commands::Bench { action } => {
+            match action {
+                Some(BenchAction::Simd { dimensions, iterations }) => {
+                    use storage::benchmark_simd;
+                    println!("SIMD Distance Benchmark");
+                    println!("======================\n");
+                    println!("Testing {} dimensions with {} iterations\n", dimensions, iterations);
+
+                    let result = benchmark_simd(*dimensions, *iterations);
+
+                    println!("Results:");
+                    println!("  SIMD:  {:.2} ns/op", result.simd_ns_per_op);
+                    println!("  Naive: {:.2} ns/op", result.naive_ns_per_op);
+                    println!("  Speedup: {:.2}x", result.speedup);
+                    println!();
+
+                    if result.speedup > 1.0 {
+                        println!("✓ SIMD acceleration is working ({:.2}x faster)", result.speedup);
+                    } else {
+                        println!("⚠ SIMD not providing speedup (might not be available on this CPU)");
+                    }
+                }
+                None => {
+                    bench::run_benchmarks().await?;
+                }
+            }
         }
         Commands::Embed { action } => {
             let mana_dir = get_mana_dir()?;
@@ -1490,6 +1675,715 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Health { action } => {
+            let mana_dir = get_mana_dir()?;
+            let db_path = mana_dir.join("metadata.sqlite");
+
+            if !db_path.exists() {
+                println!("MANA not initialized. Run 'mana init' first.");
+                return Ok(());
+            }
+
+            let conn = rusqlite::Connection::open(&db_path)?;
+
+            match action {
+                None => {
+                    // Show health status
+                    let monitor = storage::HealthMonitor::default();
+                    let status = monitor.check_health(&conn)?;
+
+                    println!("MANA Health Status");
+                    println!("==================");
+                    println!();
+                    println!("Overall Health: {:.1}% {}",
+                        status.health_score * 100.0,
+                        if status.is_healthy { "HEALTHY" } else { "NEEDS ATTENTION" }
+                    );
+                    println!();
+                    println!("Pattern Statistics:");
+                    println!("  Total patterns: {}", status.total_patterns);
+                    println!("  Low confidence (score < -2): {} ({:.1}%)",
+                        status.low_confidence_count,
+                        if status.total_patterns > 0 {
+                            (status.low_confidence_count as f64 / status.total_patterns as f64) * 100.0
+                        } else { 0.0 }
+                    );
+                    println!("  Floor confidence (score < -5): {} ({:.1}%)",
+                        status.floor_confidence_count,
+                        if status.total_patterns > 0 {
+                            (status.floor_confidence_count as f64 / status.total_patterns as f64) * 100.0
+                        } else { 0.0 }
+                    );
+                    println!("  Stale (30+ days unused): {} ({:.1}%)",
+                        status.stale_count,
+                        if status.total_patterns > 0 {
+                            (status.stale_count as f64 / status.total_patterns as f64) * 100.0
+                        } else { 0.0 }
+                    );
+                    println!("  Never accessed: {} ({:.1}%)",
+                        status.never_accessed_count,
+                        if status.total_patterns > 0 {
+                            (status.never_accessed_count as f64 / status.total_patterns as f64) * 100.0
+                        } else { 0.0 }
+                    );
+                    println!("  Average score: {:.2}", status.avg_score);
+                    println!();
+                    println!("Storage:");
+                    println!("  Database size: {:.2} MB", status.storage_size_bytes as f64 / (1024.0 * 1024.0));
+                    println!();
+
+                    // Show recommended actions
+                    let actions = monitor.recommend_actions(&status);
+                    if actions.is_empty() {
+                        println!("No pruning actions recommended.");
+                    } else {
+                        println!("Recommended Actions:");
+                        for action in &actions {
+                            println!("  - {}", action);
+                        }
+                        println!();
+                        println!("Run 'mana health auto-prune' to execute these actions.");
+                    }
+                }
+
+                Some(HealthAction::AutoPrune { dry_run }) => {
+                    let monitor = storage::HealthMonitor::default();
+
+                    if dry_run {
+                        // Show what would be pruned
+                        let status = monitor.check_health(&conn)?;
+                        let actions = monitor.recommend_actions(&status);
+
+                        println!("DRY RUN: Health Auto-Pruning");
+                        println!("=============================");
+                        println!();
+
+        Commands::Analyze { action } => {
+            use learning::failure_analysis::FailureAnalyzer;
+
+            match action {
+                AnalyzeAction::Trajectory { session_id } => {
+                    // Find and parse the trajectory with this session ID
+                    let log_dir = dirs::home_dir()
+                        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+                        .join(".claude")
+                        .join("projects");
+
+                    let mut found_trajectory = None;
+
+                    if log_dir.exists() {
+                        for entry in std::fs::read_dir(&log_dir)? {
+                            let entry = entry?;
+                            let path = entry.path();
+                            if path.is_dir() {
+                                if let Ok(subentries) = std::fs::read_dir(&path) {
+                                    for subentry in subentries.flatten() {
+                                        let subpath = subentry.path();
+                                        if subpath.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                                            if let Ok(trajectories) = learning::trajectory::parse_trajectories(&subpath, 0) {
+                                                if let Some(traj) = trajectories.into_iter().find(|t| t.session_id == *session_id) {
+                                                    found_trajectory = Some(traj);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if found_trajectory.is_some() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    match found_trajectory {
+                        Some(trajectory) => {
+                            let analyzer = FailureAnalyzer::new();
+                            let analysis = analyzer.analyze(&trajectory);
+
+                            println!("Trajectory Analysis: {}", session_id);
+                            println!("{}", "=".repeat(50));
+                            println!();
+                            println!("Session: {}", analysis.session_id);
+                            println!("Total steps: {}", analysis.total_steps);
+                            println!("Success rate: {:.1}%", analysis.success_rate * 100.0);
+                            println!();
+
+                            if analysis.failure_points.is_empty() {
+                                println!("No failures detected. This trajectory succeeded!");
+                            } else {
+                                println!("Failure Points: {}", analysis.failure_points.len());
+                                println!();
+
+                                for (i, fp) in analysis.failure_points.iter().enumerate() {
+                                    println!("{}. [Step {}] {} - {:?}",
+                                        i + 1, fp.step_index, fp.tool_name, fp.failure_type);
+                                    println!("   Severity: {:?} | Recoverable: {}",
+                                        fp.severity, if fp.is_recoverable { "Yes" } else { "No" });
+                                    println!("   Context: {}", fp.context_before);
+
+                                    // Truncate error message for display
+                                    let err_display = if fp.error_message.len() > 100 {
+                                        format!("{}...", &fp.error_message[..97])
+                                    } else {
+                                        fp.error_message.clone()
+                                    };
+                                    println!("   Error: {}", err_display);
+
+                                    if let Some(suggestion) = &fp.suggested_fix {
+                                        println!("   Suggestion: {}", suggestion);
+                                    }
+                                    println!();
+                                }
+
+                                if let Some(primary) = &analysis.primary_failure {
+                                    println!("Primary Failure:");
+                                    println!("  Type: {:?}", primary.failure_type);
+                                    println!("  Step: {}", primary.step_index);
+                                    println!("  Tool: {}", primary.tool_name);
+                                    println!();
+                                }
+
+                                if let Some(root_cause) = &analysis.root_cause {
+                                    println!("Root Cause Analysis:");
+                                    println!("  Category: {:?}", root_cause.category);
+                                    println!("  Confidence: {:.0}%", root_cause.confidence * 100.0);
+                                    println!("  Description: {}", root_cause.description);
+
+                                    if !root_cause.contributing_factors.is_empty() {
+                                        println!("  Contributing factors:");
+                                        for factor in &root_cause.contributing_factors {
+                                            println!("    - {}", factor);
+                                        }
+                                    }
+                                    println!();
+                                }
+
+                                if !analysis.recovery_suggestions.is_empty() {
+                                    println!("Recovery Suggestions:");
+                                    for (i, suggestion) in analysis.recovery_suggestions.iter().enumerate() {
+                                        println!("  {}. {}", i + 1, suggestion);
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            println!("Trajectory with session ID '{}' not found.", session_id);
+                            println!();
+                            println!("Available sessions can be found in:");
+                            println!("  ~/.claude/projects/*/");
+                        }
+                    }
+                }
+                AnalyzeAction::Stats => {
+                    // Collect all trajectories and analyze them
+                    println!("Analyzing all trajectories for failure statistics...");
+                    println!();
+
+                    let log_dir = dirs::home_dir()
+                        .ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?
+                        .join(".claude")
+                        .join("projects");
+
+                    let mut all_trajectories = Vec::new();
+
+                    if log_dir.exists() {
+                        for entry in std::fs::read_dir(&log_dir)? {
+                            let entry = entry?;
+                            let path = entry.path();
+                            if path.is_dir() {
+                                if let Ok(subentries) = std::fs::read_dir(&path) {
+                                    for subentry in subentries.flatten() {
+                                        let subpath = subentry.path();
+                                        if subpath.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                                            if let Ok(trajectories) = learning::trajectory::parse_trajectories(&subpath, 0) {
+                                                all_trajectories.extend(trajectories);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if all_trajectories.is_empty() {
+                        println!("No trajectories found for analysis.");
+                        return Ok(());
+                    }
+
+                    let analyzer = FailureAnalyzer::new();
+                    let analyses: Vec<_> = all_trajectories.iter()
+                        .map(|t| analyzer.analyze(t))
+                        .collect();
+
+                    let stats = analyzer.failure_statistics(&analyses);
+
+                    println!("Failure Statistics");
+                    println!("{}", "=".repeat(50));
+                    println!();
+                    println!("Total trajectories analyzed: {}", stats.total_trajectories);
+                    println!("Trajectories with failures: {} ({:.1}%)",
+                        stats.failed_trajectories,
+                        if stats.total_trajectories > 0 {
+                            (stats.failed_trajectories as f64 / stats.total_trajectories as f64) * 100.0
+                        } else { 0.0 }
+                    );
+                    println!("Avg failure points per failed trajectory: {:.2}", stats.avg_failure_points_per_trajectory);
+                    println!("Recovery rate: {:.1}%", stats.recovery_rate * 100.0);
+                    println!();
+
+                    if !stats.most_common_failures.is_empty() {
+                        println!("Most Common Failure Types:");
+                        for (i, (failure_type, count)) in stats.most_common_failures.iter().take(10).enumerate() {
+                            let percentage = (*count as f64 / stats.failed_trajectories.max(1) as f64) * 100.0;
+                            println!("  {}. {:?}: {} occurrences ({:.1}%)",
+                                i + 1, failure_type, count, percentage);
+                            println!("      {}", failure_type.description());
+                        }
+                    }
+                }
+            }
+        }
+                        if actions.is_empty() {
+                            println!("No pruning actions needed. Database is healthy.");
+                        } else {
+                            println!("Would execute the following actions:");
+                            for action in &actions {
+                                println!("  - {:?}", action);
+                            }
+                            println!();
+                            println!("Current health score: {:.1}%", status.health_score * 100.0);
+                            println!();
+                            println!("Run without --dry-run to actually execute pruning.");
+                        }
+                    } else {
+                        // Execute pruning
+                        println!("Running health auto-pruning...");
+                        println!();
+
+                        let result = monitor.auto_prune(&conn)?;
+
+                        println!("Pruning Complete");
+                        println!("================");
+                        println!();
+                        println!("Actions taken: {}", result.actions_taken.len());
+                        for action in &result.actions_taken {
+                            println!("  - {:?}", action);
+                        }
+                        println!();
+                        println!("Patterns deleted: {}", result.patterns_deleted);
+                        println!("Patterns decayed: {}", result.patterns_decayed);
+                        println!();
+                        println!("Health Score:");
+                        println!("  Before: {:.1}% {}",
+                            result.before_health.health_score * 100.0,
+                            if result.before_health.is_healthy { "(healthy)" } else { "(unhealthy)" }
+                        );
+                        println!("  After:  {:.1}% {}",
+                            result.after_health.health_score * 100.0,
+                            if result.after_health.is_healthy { "(healthy)" } else { "(unhealthy)" }
+                        );
+
+                        if result.after_health.is_healthy && !result.before_health.is_healthy {
+                            println!();
+                            println!("Database health improved!");
+                        }
+                    }
+                }
+            }
+        }
+        Commands::Transfer { action } => {
+            use learning::{TransferEngine, TransferConfig, TransferSource, AdaptationStrategy};
+
+            let mana_dir = get_mana_dir()?;
+            let dest_db = mana_dir.join("metadata.sqlite");
+
+            match action {
+                TransferAction::From {
+                    source,
+                    to,
+                    min_score,
+                    min_success_rate,
+                    preview,
+                    tool_types,
+                    domains,
+                    top,
+                    adapt,
+                    target_domain,
+                } => {
+                    // Determine destination
+                    let dest_path = if let Some(path) = to {
+                        PathBuf::from(path)
+                    } else {
+                        dest_db.clone()
+                    };
+
+                    // Parse source
+                    let transfer_source = if std::path::Path::new(&source).exists() {
+                        // Check if it's a database file or directory
+                        let source_path = std::path::Path::new(&source);
+                        if source_path.is_file() {
+                            TransferSource::Database(source_path.to_path_buf())
+                        } else {
+                            TransferSource::Project(source.clone())
+                        }
+                    } else {
+                        // Assume it's a session ID
+                        TransferSource::Session(source.clone())
+                    };
+
+                    // Create transfer engine
+                    let config = TransferConfig {
+                        min_score,
+                        min_success_rate,
+                        adapt_tier: true,
+                        preserve_provenance: true,
+                        merge_duplicates: true,
+                        similarity_threshold: 0.85,
+                    };
+
+                    let engine = TransferEngine::new(config);
+
+                    // Preview mode
+                    if preview {
+                        println!("Transfer Preview");
+                        println!("================");
+                        println!();
+
+                        let preview_result = engine.preview_transfer(&transfer_source, &dest_path)?;
+
+                        println!("Total patterns in source: {}", preview_result.total_patterns);
+                        println!("Eligible for transfer: {}", preview_result.eligible_patterns);
+                        println!("Would merge with existing: {}", preview_result.would_merge);
+                        println!("Would skip: {}", preview_result.would_skip);
+                        println!("Estimated benefit score: {:.2}", preview_result.estimated_benefit);
+
+                        if !preview_result.conflicts.is_empty() {
+                            println!();
+                            println!("Potential issues:");
+                            for conflict in &preview_result.conflicts {
+                                println!("  - {}", conflict);
+                            }
+                        }
+
+                        println!();
+                        println!("Run without --preview to execute transfer.");
+                        return Ok(());
+                    }
+
+                    // Execute transfer based on options
+                    let result = if let Some(percentile) = top {
+                        println!("Transferring top {:.0}% patterns...", (1.0 - percentile) * 100.0);
+                        engine.transfer_top_patterns(&transfer_source, &dest_path, percentile)?
+                    } else if tool_types.is_some() || domains.is_some() {
+                        let tool_filter: Option<Vec<String>> = tool_types.as_ref().map(|s| {
+                            s.split(',').map(|t| t.trim().to_string()).collect()
+                        });
+                        let domain_filter: Option<Vec<String>> = domains.as_ref().map(|s| {
+                            s.split(',').map(|d| d.trim().to_string()).collect()
+                        });
+
+                        println!("Transferring filtered patterns...");
+                        engine.transfer_filtered(
+                            &transfer_source,
+                            &dest_path,
+                            tool_filter.as_deref(),
+                            domain_filter.as_deref(),
+                        )?
+                    } else if adapt != "direct" || target_domain.is_some() {
+                        let strategy = match adapt.to_lowercase().as_str() {
+                            "contextualize" => AdaptationStrategy::Contextualize,
+                            "generalize" => AdaptationStrategy::Generalize,
+                            "specialize" => AdaptationStrategy::Specialize,
+                            _ => AdaptationStrategy::Direct,
+                        };
+
+                        let domain = target_domain.as_deref().unwrap_or("general");
+                        println!("Transferring with {:?} adaptation to '{}'...", strategy, domain);
+                        engine.transfer_with_adaptation(&transfer_source, &dest_path, strategy, domain)?
+                    } else {
+                        println!("Transferring patterns...");
+                        engine.transfer(&transfer_source, &dest_path)?
+                    };
+
+                    println!();
+                    println!("Transfer Complete");
+                    println!("=================");
+                    println!();
+                    println!("Patterns transferred: {}", result.patterns_transferred);
+                    println!("Patterns merged: {}", result.patterns_merged);
+                    println!("Patterns skipped: {}", result.patterns_skipped);
+                    println!("Skills transferred: {}", result.skills_transferred);
+                    println!("Causal edges transferred: {}", result.causal_edges_transferred);
+                    println!();
+                    println!("From: {}", result.source);
+                    println!("To:   {}", result.destination);
+                }
+
+                TransferAction::List { source, limit, min_score } => {
+                    // Parse source
+                    let transfer_source = if std::path::Path::new(&source).exists() {
+                        let source_path = std::path::Path::new(&source);
+                        if source_path.is_file() {
+                            TransferSource::Database(source_path.to_path_buf())
+                        } else {
+                            TransferSource::Project(source.clone())
+                        }
+                    } else {
+                        TransferSource::Session(source.clone())
+                    };
+
+                    let config = TransferConfig::default();
+                    let engine = TransferEngine::new(config);
+
+                    let patterns = engine.get_transferable(&transfer_source)?;
+
+                    // Filter and limit
+                    let filtered: Vec<_> = patterns.into_iter()
+                        .filter(|p| p.transferability_score >= min_score)
+                        .take(limit)
+                        .collect();
+
+                    println!("Transferable Patterns (showing {} of available)", filtered.len());
+                    println!("{}", "=".repeat(70));
+                    println!();
+
+                    if filtered.is_empty() {
+                        println!("No transferable patterns found.");
+                    } else {
+                        for (i, pattern) in filtered.iter().enumerate() {
+                            println!("{}. [{}] score:{} success:{:.0}% transfer:{:.2}",
+                                i + 1,
+                                pattern.tool_type,
+                                pattern.score,
+                                pattern.success_rate * 100.0,
+                                pattern.transferability_score
+                            );
+                            println!("   {}", pattern.context_preview);
+                            if !pattern.tier.is_empty() {
+                                println!("   Tier: {}", pattern.tier);
+                            }
+                            println!();
+                        }
+                    }
+                }
+
+                TransferAction::Policy { source, to } => {
+                    // Determine destination
+                    let dest_path = if let Some(path) = to {
+                        PathBuf::from(path)
+                    } else {
+                        dest_db.clone()
+                    };
+
+                    // Parse source
+                    let transfer_source = if std::path::Path::new(&source).exists() {
+                        let source_path = std::path::Path::new(&source);
+                        if source_path.is_file() {
+                            TransferSource::Database(source_path.to_path_buf())
+                        } else {
+                            TransferSource::Project(source.clone())
+                        }
+                    } else {
+                        TransferSource::Session(source.clone())
+                    };
+
+                    let config = TransferConfig::default();
+                    let engine = TransferEngine::new(config);
+
+                    println!("Transferring Q-learning policy...");
+                    let result = engine.transfer_policy(&transfer_source, &dest_path)?;
+
+                    println!();
+                    println!("Policy Transfer Complete");
+                    println!("========================");
+                    println!();
+                    println!("States transferred: {}", result.states_transferred);
+                    println!("Actions transferred: {}", result.actions_transferred);
+                    println!("Q-values adapted: {}", result.q_values_adapted);
+                }
+            }
+        }
+        Commands::Provenance { action } => {
+            use storage::ProvenanceStore;
+
+            let mana_dir = get_mana_dir()?;
+            let db_path = mana_dir.join("metadata.sqlite");
+
+            if !db_path.exists() {
+                println!("No database found. Run 'mana init' first.");
+                return Ok(());
+            }
+
+            let conn = Connection::open(&db_path)?;
+            let prov_store = ProvenanceStore::new(conn)?;
+
+            match action {
+                ProvenanceAction::Explain { pattern_id, context } => {
+                    let context_str = context.as_deref().unwrap_or("general context");
+                    let explanation = prov_store.explain_selection(pattern_id, context_str)?;
+                    println!("{}", explanation);
+                }
+
+                ProvenanceAction::Show { pattern_id } => {
+                    let cert = prov_store.get_provenance(pattern_id)?;
+
+                    println!("Provenance Certificate for Pattern #{}", pattern_id);
+                    println!("{}", "=".repeat(60));
+                    println!();
+
+                    println!("Merkle Root: {}", cert.merkle_root);
+                    println!("Created: {}", format_timestamp(cert.creation_timestamp));
+                    println!();
+
+                    println!("Source Trajectories ({}):", cert.source_trajectories.len());
+                    for (i, traj) in cert.source_trajectories.iter().enumerate() {
+                        println!("  {}. {}", i + 1, traj);
+                    }
+                    println!();
+
+                    println!("Confidence Factors ({}):", cert.confidence_factors.len());
+                    for factor in &cert.confidence_factors {
+                        println!("  {} = {:.2} (weight: {:.2})",
+                            factor.factor_name, factor.value, factor.weight);
+                        if let Some(evidence) = &factor.evidence {
+                            println!("    Evidence: {}", evidence);
+                        }
+                    }
+                    println!();
+
+                    println!("Derivation Chain ({} steps):", cert.derivation_chain.len());
+                    for (i, step) in cert.derivation_chain.iter().enumerate() {
+                        println!("  {}. {:?} (delta: {:+.2})",
+                            i + 1, step.step_type, step.confidence_delta);
+                        println!("     {}", step.evidence);
+                        println!("     Time: {}", format_timestamp(step.timestamp));
+                    }
+
+                    // Verify certificate
+                    let verified = prov_store.verify_certificate(&cert)?;
+                    println!();
+                    println!("Certificate Status: {}", if verified { "VERIFIED ✓" } else { "INVALID ✗" });
+                }
+
+                ProvenanceAction::Justify { action, pattern_id } => {
+                    // Get top patterns as alternatives for comparison
+                    let alternatives: Vec<(i64, f64)> = if pattern_id.is_some() {
+                        let conn_alt = Connection::open(&db_path)?;
+                        let mut stmt = conn_alt.prepare(
+                            "SELECT id, (success_count - failure_count) as score
+                             FROM patterns
+                             WHERE id != ?1
+                             ORDER BY score DESC
+                             LIMIT 5"
+                        )?;
+
+                        let pid = pattern_id.unwrap();
+                        let mut alts = Vec::new();
+                        let rows = stmt.query_map(params![pid], |row| {
+                            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+                        })?;
+
+                        for row in rows {
+                            if let Ok(alt) = row {
+                                alts.push(alt);
+                            }
+                        }
+                        alts
+                    } else {
+                        Vec::new()
+                    };
+
+                    let justification = prov_store.justify_action(&action, pattern_id, &alternatives)?;
+
+                    println!("Action Justification");
+                    println!("{}", "=".repeat(60));
+                    println!();
+
+                    println!("Action: {}", justification.action_type);
+                    if let Some(pid) = justification.pattern_used {
+                        println!("Pattern Used: #{}", pid);
+                    }
+                    println!("Confidence: {:.1}%", justification.confidence * 100.0);
+                    println!();
+
+                    println!("Reasoning:");
+                    println!("  {}", justification.reasoning);
+                    println!();
+
+                    if !justification.supporting_evidence.is_empty() {
+                        println!("Supporting Evidence ({}):", justification.supporting_evidence.len());
+                        for (i, evidence) in justification.supporting_evidence.iter().enumerate() {
+                            println!("  {}. [{}] {}", i + 1, evidence.evidence_type, evidence.content);
+                            println!("     Strength: {:.1}% | Source: {}",
+                                evidence.strength * 100.0, evidence.source);
+                        }
+                        println!();
+                    }
+
+                    if !justification.alternatives_considered.is_empty() {
+                        println!("Alternatives Considered ({}):", justification.alternatives_considered.len());
+                        for (i, alt) in justification.alternatives_considered.iter().enumerate() {
+                            println!("  {}. [score: {:.2}] {}", i + 1, alt.score, alt.action);
+                            println!("     Rejected: {}", alt.reason_rejected);
+                        }
+                    }
+                }
+
+                ProvenanceAction::Chains { limit } => {
+                    let chains = prov_store.get_recent_reasoning(limit)?;
+
+                    println!("Recent Reasoning Chains (showing {})", chains.len());
+                    println!("{}", "=".repeat(60));
+                    println!();
+
+                    if chains.is_empty() {
+                        println!("No reasoning chains recorded yet.");
+                    } else {
+                        for (i, chain) in chains.iter().enumerate() {
+                            println!("{}. Chain #{} (Pattern #{})", i + 1, chain.id, chain.pattern_id);
+                            println!("   Context: {}", chain.task_context);
+                            println!("   Confidence: {:.1}%", chain.confidence * 100.0);
+                            println!("   Steps: {}", chain.steps.len());
+                            for (j, step) in chain.steps.iter().enumerate() {
+                                println!("     {}. {:?}: {}", j + 1, step.step_type, step.content);
+                                if let Some(evidence) = &step.evidence {
+                                    println!("        Evidence: {}", evidence);
+                                }
+                            }
+                            println!("   Decision: {}", chain.final_decision);
+                            println!("   Time: {}", format_timestamp(chain.timestamp));
+                            println!();
+                        }
+                    }
+                }
+
+                ProvenanceAction::Verify { pattern_id } => {
+                    let cert = prov_store.get_provenance(pattern_id)?;
+                    let verified = prov_store.verify_certificate(&cert)?;
+
+                    println!("Provenance Verification for Pattern #{}", pattern_id);
+                    println!("{}", "=".repeat(60));
+                    println!();
+
+                    println!("Merkle Root: {}", cert.merkle_root);
+                    println!("Derivation Steps: {}", cert.derivation_chain.len());
+                    println!();
+
+                    if verified {
+                        println!("✓ Certificate is VALID");
+                        println!();
+                        println!("The provenance chain has not been tampered with.");
+                        println!("All derivation steps are cryptographically verified.");
+                    } else {
+                        println!("✗ Certificate is INVALID");
+                        println!();
+                        println!("WARNING: The provenance chain may have been altered!");
+                        println!("The Merkle root does not match the derivation chain.");
+                    }
+                }
+            }
+        }
         Commands::Daemon { action } => {
             let mana_dir = get_mana_dir()?;
 
@@ -1670,4 +2564,13 @@ fn format_emoji(count: i64, kind: &str) -> String {
         "warning" => "".to_string(),
         _ => String::new(),
     }
+}
+
+/// Format Unix timestamp for human reading
+fn format_timestamp(ts: i64) -> String {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let datetime = UNIX_EPOCH + Duration::from_secs(ts as u64);
+    let chrono_dt = chrono::DateTime::<chrono::Utc>::from(datetime);
+    chrono_dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }

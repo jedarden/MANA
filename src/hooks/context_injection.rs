@@ -341,6 +341,9 @@ fn query_patterns_vector(
                 success_count: m.success_count,
                 failure_count: m.failure_count,
                 embedding_id: None,
+                last_used: None,
+                access_count: 0,
+                tier_path: "global".to_string(),
             };
 
             // Combined score: 60% vector similarity, 40% success rate

@@ -25,6 +25,10 @@ pub use hnsw::{HnswIndex, HnswMatch, HnswConfig};
 #[allow(unused_imports)]
 pub use quantize::{QuantizedVector, QuantizedStore, QuantizationMethod, QuantizationConfig};
 
+// Re-export SIMD distance from storage module for convenience
+#[allow(unused_imports)]
+pub use crate::storage::simd_distance::{SimdDistance, DistanceMetric};
+
 /// Embedding dimensions for the default model (gte-small)
 pub const EMBEDDING_DIM: usize = 384;
 

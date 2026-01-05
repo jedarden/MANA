@@ -143,6 +143,9 @@ pub fn import_patterns(
             success_count: exportable.success_count,
             failure_count: exportable.failure_count,
             embedding_id: None,
+            last_used: None,
+            access_count: 0,
+            tier_path: "global".to_string(),
         };
 
         match merge_strategy {
@@ -266,6 +269,9 @@ pub fn import_patterns_from_vec(
             success_count: exportable.success_count,
             failure_count: exportable.failure_count,
             embedding_id: None,
+            last_used: None,
+            access_count: 0,
+            tier_path: "global".to_string(),
         };
 
         match merge_strategy {
@@ -418,6 +424,9 @@ mod tests {
             success_count: 8,
             failure_count: 2,
             embedding_id: None,
+            last_used: None,
+            access_count: 0,
+            tier_path: "global".to_string(),
         };
 
         let rate = success_rate(&pattern);
@@ -435,6 +444,9 @@ mod tests {
             success_count: 0,
             failure_count: 0,
             embedding_id: None,
+            last_used: None,
+            access_count: 0,
+            tier_path: "global".to_string(),
         };
 
         let rate = success_rate(&pattern);

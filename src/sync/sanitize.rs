@@ -251,6 +251,9 @@ mod tests {
             success_count: 5,
             failure_count: 1,
             embedding_id: None,
+            last_used: None,
+            access_count: 0,
+            tier_path: "global".to_string(),
         };
 
         let sanitized = sanitize_pattern(&pattern);

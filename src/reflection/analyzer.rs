@@ -2,8 +2,11 @@
 //!
 //! Analyzes trajectory outcomes to determine success/failure
 //! and judge pattern effectiveness.
+//!
+//! Now integrates with failure_analysis for enhanced root cause identification.
 
 use crate::learning::trajectory::Trajectory;
+use crate::learning::failure_analysis::{FailureAnalyzer, FailureType};
 use crate::storage::{PatternStore, calculate_similarity};
 #[allow(unused_imports)]
 use crate::storage::Pattern; // Used in find_matching_pattern return type inference
@@ -658,6 +661,7 @@ impl TrajectoryAnalyzer {
     }
 
     /// Analyze root cause from error types
+    /// Now enhanced with failure_analysis integration for better suggestions
     fn analyze_root_cause(&self, errors: &[ErrorType]) -> String {
         if errors.is_empty() {
             return "Unknown error".into();
@@ -668,16 +672,20 @@ impl TrajectoryAnalyzer {
             .max_by_key(|e| e.severity())
             .unwrap();
 
-        match most_severe {
-            ErrorType::CompileError => "Compilation failed - check syntax and types".into(),
-            ErrorType::RuntimeError => "Runtime error - check logic and edge cases".into(),
-            ErrorType::FileNotFound => "File not found - verify path exists".into(),
-            ErrorType::PermissionDenied => "Permission denied - check file permissions".into(),
-            ErrorType::Timeout => "Operation timed out - consider optimization".into(),
-            ErrorType::SyntaxError => "Syntax error - review code structure".into(),
-            ErrorType::TestFailure => "Tests failed - check assertions and expected behavior".into(),
-            ErrorType::Other(msg) => format!("Error: {}", msg),
-        }
+        // Map ErrorType to FailureType for enhanced analysis
+        let failure_type = match most_severe {
+            ErrorType::CompileError => FailureType::CompilationError,
+            ErrorType::RuntimeError => FailureType::RuntimeError,
+            ErrorType::FileNotFound => FailureType::FileNotFound,
+            ErrorType::PermissionDenied => FailureType::PermissionDenied,
+            ErrorType::Timeout => FailureType::TimeoutError,
+            ErrorType::SyntaxError => FailureType::SyntaxError,
+            ErrorType::TestFailure => FailureType::TestFailure,
+            ErrorType::Other(msg) => FailureType::Unknown(msg.clone()),
+        };
+
+        // Get description from failure_analysis module
+        failure_type.description().to_string()
     }
 }
 

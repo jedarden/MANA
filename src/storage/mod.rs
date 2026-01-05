@@ -13,16 +13,24 @@ pub mod similarity;
 pub mod causal;
 pub mod skills;
 pub mod reasoning;
+pub mod health;
+pub mod simd_distance;
+pub mod pool;
 
 pub use patterns::{PatternStore, Pattern};
 pub use similarity::calculate_similarity;
-pub use causal::CausalStore;
-#[allow(unused_imports)]
-pub use causal::CausalEdge;
+pub use causal::{
+    CausalStore, CausalEdge, CausalRelation, InterventionResult,
+    ConfounderAnalysis, ConfounderCandidate, CausalChain, CausalGraphStats
+};
 #[allow(unused_imports)]
 pub use skills::{SkillStore, Skill, consolidate_patterns_to_skills};
 #[allow(unused_imports)]
 pub use reasoning::{ReasoningStore, ReasoningChain, ReasoningStep, ReasoningStats};
+pub use health::{HealthMonitor, HealthStatus, PruningAction, PruningConfig, PruningResult};
+pub use pool::{ConnectionPool, PoolConfig, PoolStats, PoolManager, init_global_pool, get_read_connection, get_write_connection, get_pool_stats};
+#[allow(unused_imports)]
+pub use simd_distance::{SimdDistance, DistanceMetric, benchmark_simd, SimdBenchmarkResult};
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {
@@ -105,6 +113,75 @@ pub async fn init() -> Result<()> {
     // Always ensure the category index exists
     conn.execute("CREATE INDEX IF NOT EXISTS idx_patterns_category ON patterns(command_category)", [])?;
 
+    // Migration: add access_count column if it doesn't exist (for health monitoring)
+    let has_access_count: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('patterns') WHERE name = 'access_count'",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? > 0),
+    ).unwrap_or(false);
+
+    if !has_access_count {
+        conn.execute("ALTER TABLE patterns ADD COLUMN access_count INTEGER DEFAULT 0", [])?;
+        info!("Migrated patterns table to add access_count column for health monitoring");
+    }
+
+    // Migration: add causal edge extensions (relation_type, p_value, sample_count)
+    let has_relation_type: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('causal_edges') WHERE name = 'relation_type'",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? > 0),
+    ).unwrap_or(false);
+
+    if !has_relation_type {
+        conn.execute("ALTER TABLE causal_edges ADD COLUMN relation_type TEXT DEFAULT 'Correlates'", [])?;
+        info!("Migrated causal_edges table to add relation_type column");
+    }
+
+    let has_p_value: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('causal_edges') WHERE name = 'p_value'",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? > 0),
+    ).unwrap_or(false);
+
+    if !has_p_value {
+        conn.execute("ALTER TABLE causal_edges ADD COLUMN p_value REAL", [])?;
+        info!("Migrated causal_edges table to add p_value column");
+    }
+
+    let has_sample_count: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('causal_edges') WHERE name = 'sample_count'",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? > 0),
+    ).unwrap_or(false);
+
+    if !has_sample_count {
+        conn.execute("ALTER TABLE causal_edges ADD COLUMN sample_count INTEGER DEFAULT 0", [])?;
+        // Backfill sample_count with co_occurrences for existing records
+        conn.execute("UPDATE causal_edges SET sample_count = co_occurrences WHERE sample_count = 0", [])?;
+        info!("Migrated causal_edges table to add sample_count column");
+    }
+
+    // Migration: add instruction tracking columns (session_count, frequency_weight, session_ids)
+    let has_session_count: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('patterns') WHERE name = 'session_count'",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? > 0),
+    ).unwrap_or(false);
+
+    if !has_session_count {
+        conn.execute("ALTER TABLE patterns ADD COLUMN session_count INTEGER DEFAULT 1", [])?;
+        conn.execute("ALTER TABLE patterns ADD COLUMN frequency_weight REAL DEFAULT 1.0", [])?;
+        conn.execute("ALTER TABLE patterns ADD COLUMN session_ids TEXT", [])?;
+
+        // Create specialized index for instruction queries by frequency weight
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_patterns_instruction_weight ON patterns(frequency_weight DESC) WHERE tool_type = 'instruction'",
+            []
+        )?;
+
+        info!("Migrated patterns table to add instruction tracking columns (session_count, frequency_weight, session_ids)");
+    }
+
     info!("MANA initialized at {:?}", mana_dir);
 
     // Create default config if not exists
@@ -152,7 +229,6 @@ pub async fn show_status() -> Result<()> {
         return Ok(());
     }
 
-    println!("Status: INITIALIZED");
     println!("Data directory: {:?}", mana_dir);
 
     // Check database
@@ -184,14 +260,24 @@ pub async fn show_status() -> Result<()> {
             &std::fs::read_to_string(&state_path)?
         )?;
 
+
         if let Some(count) = state.get("trajectory_count").and_then(|v| v.as_u64()) {
             println!("Pending trajectories: {}", count);
         }
     }
 
+    // Show connection pool stats if available
+    if let Some((read_stats, write_stats)) = get_pool_stats() {
+        println!();
+        println!("Connection Pool:");
+        println!("  Read pool: {}/{} connections ({} idle)",
+            read_stats.connections, read_stats.max_size, read_stats.idle_connections);
+        println!("  Write pool: {}/{} connections ({} idle)",
+            write_stats.connections, write_stats.max_size, write_stats.idle_connections);
+    }
+
     Ok(())
 }
-
 /// Show detailed MANA statistics
 pub async fn show_stats() -> Result<()> {
     let mana_dir = get_mana_dir()?;

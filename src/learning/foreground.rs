@@ -118,6 +118,7 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
     let mut reasoning_count = 0;
     let mut conversation_count = 0;
     let mut system_count = 0;
+    let mut instruction_count = 0;
 
     for trajectory in all_trajectories.iter().take(100) {
         // Extract patterns from individual successful tool calls
@@ -150,11 +151,16 @@ pub async fn foreground_learn(pending_files: &[PathBuf]) -> Result<LearningResul
         system_count += sys_patterns.len();
         all_patterns.extend(sys_patterns);
 
+        // NEW: Extract instruction patterns from user messages
+        let instr_patterns = extract_instruction_patterns(trajectory);
+        instruction_count += instr_patterns.len();
+        all_patterns.extend(instr_patterns);
+
         result.trajectories_processed += 1;
     }
 
-    info!("Extracted {} reasoning, {} conversation, {} system patterns",
-          reasoning_count, conversation_count, system_count);
+    info!("Extracted {} reasoning, {} conversation, {} system, {} instruction patterns",
+          reasoning_count, conversation_count, system_count, instruction_count);
 
     info!("Extracted {} Edit patterns, {} Bash patterns", edit_count, bash_count);
 
@@ -291,6 +297,9 @@ fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
                     success_count: 1,
                     failure_count: 0,
                     embedding_id: None,
+                    last_used: None,
+                    access_count: 0,
+                    tier_path: "global".to_string(),
                 });
             }
             _ => continue,
@@ -409,6 +418,9 @@ fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             context_query,
             success_count: 1,
             failure_count: 0,
+            last_used: None,
+            access_count: 0,
+                    tier_path: "global".to_string(),
             embedding_id: None,
         });
     }
@@ -621,6 +633,9 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
                 success_count: 0,
                 failure_count: 1,
                 embedding_id: None,
+                last_used: None,
+                access_count: 0,
+                    tier_path: "global".to_string(),
             });
 
             if patterns.len() >= MAX_PATTERNS_PER_TRAJECTORY {
@@ -953,6 +968,9 @@ fn extract_reasoning_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             success_count: if trajectory.verdict.map(|v| v.success).unwrap_or(false) { 1 } else { 0 },
             failure_count: if trajectory.verdict.map(|v| v.success).unwrap_or(false) { 0 } else { 1 },
             embedding_id: None,
+            last_used: None,
+            access_count: 0,
+                    tier_path: "global".to_string(),
         });
 
         if patterns.len() >= MAX_PATTERNS_PER_TRAJECTORY {
@@ -1088,6 +1106,9 @@ fn extract_conversation_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
         success_count: 1,
         failure_count: 0,
         embedding_id: None,
+        last_used: None,
+        access_count: 0,
+                    tier_path: "global".to_string(),
     });
 
     patterns
@@ -1228,6 +1249,9 @@ fn extract_system_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             success_count: if trajectory.verdict.map(|v| v.success).unwrap_or(false) { 1 } else { 0 },
             failure_count: 0,
             embedding_id: None,
+            last_used: None,
+            access_count: 0,
+                    tier_path: "global".to_string(),
         });
 
         if patterns.len() >= 2 {
@@ -1285,6 +1309,230 @@ fn extract_system_summary(content: &str) -> String {
         format!("{}...", &result[..247])
     } else {
         result
+    }
+}
+
+// ============================================================================
+// Instruction Pattern Extraction
+// ============================================================================
+
+/// Directive keywords that signal user instructions
+const DIRECTIVE_KEYWORDS: &[&str] = &[
+    "always", "never", "must", "should", "prefer", "don't", "do not",
+    "make sure", "ensure", "remember", "avoid", "whenever", "please"
+];
+
+/// Imperative verbs that often start instructions
+const IMPERATIVE_VERBS: &[&str] = &[
+    "use", "run", "check", "test", "add", "remove", "write", "create",
+    "follow", "keep", "maintain", "apply", "format", "lint", "commit",
+    "build", "deploy", "verify", "update", "include", "exclude"
+];
+
+/// Extract instruction patterns from user messages in a trajectory
+///
+/// Scans all user messages for directive-like content (instructions, preferences,
+/// guidelines) and creates patterns for them. These patterns will be tracked
+/// across sessions to identify frequently-repeated instructions.
+pub fn extract_instruction_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
+    let mut patterns = Vec::new();
+
+    // Process all user messages in the trajectory
+    for user_message in &trajectory.user_messages {
+        let instructions = detect_instructions(user_message);
+
+        for instruction in instructions {
+            let instruction_type = classify_instruction_type(&instruction);
+
+            let context_query = format!(
+                "User instruction: {}\nType: {}\nContext: {}",
+                instruction,
+                instruction_type,
+                extract_task_category_from_query(&trajectory.user_query),
+            );
+
+            let pattern_hash = hash_string(&context_query);
+
+            patterns.push(Pattern {
+                id: 0,
+                pattern_hash,
+                tool_type: "instruction".to_string(),
+                command_category: Some(instruction_type),
+                context_query,
+                success_count: 1,
+                failure_count: 0,
+                embedding_id: None,
+                last_used: None,
+                access_count: 0,
+                tier_path: "project".to_string(), // Instructions default to project-level
+                session_count: 1,
+                frequency_weight: 1.0,
+                session_ids: None,
+            });
+        }
+    }
+
+    // Also check the main user query for instructions
+    let query_instructions = detect_instructions(&trajectory.user_query);
+    for instruction in query_instructions {
+        // Avoid duplicates by checking if we already have this instruction
+        let instruction_type = classify_instruction_type(&instruction);
+        let context_query = format!(
+            "User instruction: {}\nType: {}\nContext: {}",
+            instruction,
+            instruction_type,
+            extract_task_category_from_query(&trajectory.user_query),
+        );
+
+        let pattern_hash = hash_string(&context_query);
+
+        // Check for duplicates
+        if patterns.iter().any(|p| p.pattern_hash == pattern_hash) {
+            continue;
+        }
+
+        patterns.push(Pattern {
+            id: 0,
+            pattern_hash,
+            tool_type: "instruction".to_string(),
+            command_category: Some(instruction_type),
+            context_query,
+            success_count: 1,
+            failure_count: 0,
+            embedding_id: None,
+            last_used: None,
+            access_count: 0,
+            tier_path: "project".to_string(),
+            session_count: 1,
+            frequency_weight: 1.0,
+            session_ids: None,
+        });
+    }
+
+    // Limit to prevent excessive patterns from a single trajectory
+    patterns.truncate(5);
+    patterns
+}
+
+/// Detect instruction-like content in a user message
+///
+/// Identifies sentences that contain directive keywords or start with
+/// imperative verbs, filtering out noise and short fragments.
+fn detect_instructions(message: &str) -> Vec<String> {
+    let mut instructions = Vec::new();
+
+    // Split into sentences (handle multiple delimiters)
+    for sentence in message.split(|c| c == '.' || c == '!' || c == '\n') {
+        let sentence = sentence.trim();
+
+        // Filter: must be reasonable length
+        if sentence.len() < 10 || sentence.len() > 300 {
+            continue;
+        }
+
+        // Filter: skip code blocks
+        if sentence.starts_with("```") || sentence.starts_with("   ") || sentence.starts_with("\t") {
+            continue;
+        }
+
+        let sentence_lower = sentence.to_lowercase();
+
+        // Check for directive keywords
+        let has_directive = DIRECTIVE_KEYWORDS.iter()
+            .any(|kw| sentence_lower.contains(kw));
+
+        // Check for imperative verb at start (after common prefixes)
+        let words: Vec<&str> = sentence_lower.split_whitespace().collect();
+        let first_significant_word = words.iter()
+            .find(|w| !["please", "can", "you", "could", "would", "i", "want", "need", "to"].contains(w))
+            .unwrap_or(&"");
+
+        let starts_with_imperative = IMPERATIVE_VERBS.iter()
+            .any(|verb| first_significant_word == verb);
+
+        if has_directive || starts_with_imperative {
+            // Normalize the instruction
+            let normalized = normalize_instruction(sentence);
+            if !normalized.is_empty() && normalized.len() >= 10 {
+                instructions.push(normalized);
+            }
+        }
+    }
+
+    instructions
+}
+
+/// Normalize an instruction for consistent storage
+fn normalize_instruction(instruction: &str) -> String {
+    let mut result = instruction.trim().to_string();
+
+    // Remove leading "please" or "can you"
+    let lower = result.to_lowercase();
+    if lower.starts_with("please ") {
+        result = result[7..].to_string();
+    } else if lower.starts_with("can you ") {
+        result = result[8..].to_string();
+    } else if lower.starts_with("could you ") {
+        result = result[10..].to_string();
+    }
+
+    // Capitalize first letter
+    if let Some(c) = result.chars().next() {
+        result = c.to_uppercase().to_string() + &result[c.len_utf8()..];
+    }
+
+    // Remove trailing punctuation for consistency
+    result = result.trim_end_matches(|c| c == '.' || c == '!' || c == '?').to_string();
+
+    result
+}
+
+/// Classify the type of instruction for categorization
+fn classify_instruction_type(instruction: &str) -> String {
+    let lower = instruction.to_lowercase();
+
+    if lower.contains("test") || lower.contains("spec") || lower.contains("coverage") {
+        "testing".to_string()
+    } else if lower.contains("typescript") || lower.contains("eslint") || lower.contains("format")
+           || lower.contains("lint") || lower.contains("style") || lower.contains("prettier") {
+        "coding_style".to_string()
+    } else if lower.contains("commit") || lower.contains("git") || lower.contains("branch")
+           || lower.contains("push") || lower.contains("merge") {
+        "version_control".to_string()
+    } else if lower.contains("error") || lower.contains("handle") || lower.contains("catch")
+           || lower.contains("exception") {
+        "error_handling".to_string()
+    } else if lower.contains("document") || lower.contains("comment") || lower.contains("readme") {
+        "documentation".to_string()
+    } else if lower.contains("build") || lower.contains("compile") || lower.contains("deploy") {
+        "build_deploy".to_string()
+    } else if lower.contains("import") || lower.contains("export") || lower.contains("module")
+           || lower.contains("package") {
+        "dependencies".to_string()
+    } else if lower.contains("name") || lower.contains("variable") || lower.contains("function")
+           || lower.contains("class") {
+        "naming".to_string()
+    } else {
+        "general".to_string()
+    }
+}
+
+/// Extract a task category from the user query for context
+fn extract_task_category_from_query(query: &str) -> String {
+    let lower = query.to_lowercase();
+
+    if lower.contains("fix") || lower.contains("bug") || lower.contains("error") {
+        "bug_fix".to_string()
+    } else if lower.contains("add") || lower.contains("implement") || lower.contains("create") {
+        "feature".to_string()
+    } else if lower.contains("refactor") || lower.contains("improve") || lower.contains("clean") {
+        "refactoring".to_string()
+    } else if lower.contains("test") {
+        "testing".to_string()
+    } else if lower.contains("deploy") || lower.contains("release") {
+        "deployment".to_string()
+    } else {
+        "general".to_string()
     }
 }
 

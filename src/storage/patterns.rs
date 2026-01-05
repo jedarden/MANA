@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::debug;
 
+use super::tiers::TierPath;
+
 /// A stored pattern from the ReasoningBank
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pattern {
@@ -17,12 +19,32 @@ pub struct Pattern {
     pub tool_type: String,
     /// For Bash patterns, the primary command (cargo, npm, git, etc.)
     /// For Edit patterns, the file extension (rs, ts, py, etc.)
+    /// For instruction patterns, the category (testing, coding_style, version_control, etc.)
     pub command_category: Option<String>,
     pub context_query: String,
     pub success_count: i64,
     pub failure_count: i64,
     pub embedding_id: Option<i64>,
+    /// Last time this pattern was used (ISO 8601 string)
+    pub last_used: Option<String>,
+    /// Number of times this pattern has been accessed
+    pub access_count: i64,
+    /// Hierarchical memory tier path (e.g., "global", "domain/infrastructure/k8s", "project/mana")
+    pub tier_path: String,
+    /// Number of unique sessions where this pattern appeared (for instruction patterns)
+    #[serde(default = "default_session_count")]
+    pub session_count: i64,
+    /// Frequency weight multiplier - higher means more frequently repeated
+    /// Calculated as: ln(1 + occurrences) * (1 + ln(session_count) * 0.5)
+    #[serde(default = "default_frequency_weight")]
+    pub frequency_weight: f64,
+    /// JSON array of session IDs where this instruction appeared
+    #[serde(default)]
+    pub session_ids: Option<String>,
 }
+
+fn default_session_count() -> i64 { 1 }
+fn default_frequency_weight() -> f64 { 1.0 }
 
 /// Pattern store backed by SQLite
 pub struct PatternStore {
@@ -147,12 +169,13 @@ impl PatternStore {
         let changes = self.conn.execute(
             r#"
             INSERT INTO patterns
-            (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id, access_count, tier_path)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT(pattern_hash) DO UPDATE SET
                 success_count = success_count + excluded.success_count,
                 failure_count = failure_count + excluded.failure_count,
-                last_used = CURRENT_TIMESTAMP
+                last_used = CURRENT_TIMESTAMP,
+                access_count = access_count + 1
             "#,
             params![
                 pattern.pattern_hash,
@@ -161,7 +184,9 @@ impl PatternStore {
                 pattern.context_query,
                 pattern.success_count,
                 pattern.failure_count,
-                pattern.embedding_id
+                pattern.embedding_id,
+                pattern.access_count,
+                pattern.tier_path
             ],
         )?;
 
@@ -186,12 +211,13 @@ impl PatternStore {
             let mut stmt = tx.prepare_cached(
                 r#"
                 INSERT INTO patterns
-                (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id, access_count, tier_path)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 ON CONFLICT(pattern_hash) DO UPDATE SET
                     success_count = success_count + excluded.success_count,
                     failure_count = failure_count + excluded.failure_count,
-                    last_used = CURRENT_TIMESTAMP
+                    last_used = CURRENT_TIMESTAMP,
+                    access_count = access_count + 1
                 "#,
             )?;
 
@@ -203,7 +229,9 @@ impl PatternStore {
                     pattern.context_query,
                     pattern.success_count,
                     pattern.failure_count,
-                    pattern.embedding_id
+                    pattern.embedding_id,
+                    pattern.access_count,
+                    pattern.tier_path
                 ]).is_ok() {
                     inserted += 1;
                 }
@@ -260,8 +288,8 @@ impl PatternStore {
         self.conn.execute(
             r#"
             INSERT OR REPLACE INTO patterns
-            (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            (pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id, access_count, tier_path)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
             params![
                 pattern.pattern_hash,
@@ -270,7 +298,9 @@ impl PatternStore {
                 pattern.context_query,
                 pattern.success_count,
                 pattern.failure_count,
-                pattern.embedding_id
+                pattern.embedding_id,
+                pattern.access_count,
+                pattern.tier_path
             ],
         )?;
 
@@ -282,7 +312,9 @@ impl PatternStore {
         // Use prepare_cached for faster repeated queries
         let mut stmt = self.conn.prepare_cached(
             r#"
-            SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
+            SELECT id, pattern_hash, tool_type, command_category, context_query,
+                   success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                   session_count, frequency_weight, session_ids
             FROM patterns
             WHERE tool_type = ?1
             ORDER BY (success_count - failure_count) DESC, success_count DESC
@@ -300,6 +332,12 @@ impl PatternStore {
                 success_count: row.get(5)?,
                 failure_count: row.get(6)?,
                 embedding_id: row.get(7)?,
+                last_used: row.get(8).ok(),
+                access_count: row.get(9).unwrap_or(0),
+                tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                session_count: row.get(11).unwrap_or(1),
+                frequency_weight: row.get(12).unwrap_or(1.0),
+                session_ids: row.get(13).ok(),
             })
         })?;
 
@@ -314,7 +352,9 @@ impl PatternStore {
             Some(cat) => {
                 let mut stmt = self.conn.prepare(
                     r#"
-                    SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
+                    SELECT id, pattern_hash, tool_type, command_category, context_query,
+                           success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                           session_count, frequency_weight, session_ids
                     FROM patterns
                     WHERE tool_type = ?1 AND command_category = ?2
                     ORDER BY (success_count - failure_count) DESC, success_count DESC
@@ -332,6 +372,12 @@ impl PatternStore {
                         success_count: row.get(5)?,
                         failure_count: row.get(6)?,
                         embedding_id: row.get(7)?,
+                        last_used: row.get(8).ok(),
+                        access_count: row.get(9).unwrap_or(0),
+                        tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                        session_count: row.get(11).unwrap_or(1),
+                        frequency_weight: row.get(12).unwrap_or(1.0),
+                        session_ids: row.get(13).ok(),
                     })
                 })?;
 
@@ -365,7 +411,9 @@ impl PatternStore {
     pub fn get_by_id(&self, id: i64) -> Result<Option<Pattern>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
+            SELECT id, pattern_hash, tool_type, command_category, context_query,
+                   success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                   session_count, frequency_weight, session_ids
             FROM patterns
             WHERE id = ?1
             "#,
@@ -383,6 +431,12 @@ impl PatternStore {
                 success_count: row.get(5)?,
                 failure_count: row.get(6)?,
                 embedding_id: row.get(7)?,
+                last_used: row.get(8).ok(),
+                access_count: row.get(9).unwrap_or(0),
+                tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                session_count: row.get(11).unwrap_or(1),
+                frequency_weight: row.get(12).unwrap_or(1.0),
+                session_ids: row.get(13).ok(),
             }))
         } else {
             Ok(None)
@@ -424,7 +478,9 @@ impl PatternStore {
     pub fn get_patterns_below_score(&self, min_score: i64) -> Result<Vec<Pattern>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
+            SELECT id, pattern_hash, tool_type, command_category, context_query,
+                   success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                   session_count, frequency_weight, session_ids
             FROM patterns
             WHERE (success_count - failure_count) < ?1
             ORDER BY (success_count - failure_count) ASC
@@ -441,13 +497,19 @@ impl PatternStore {
                 success_count: row.get(5)?,
                 failure_count: row.get(6)?,
                 embedding_id: row.get(7)?,
+                last_used: row.get(8).ok(),
+                access_count: row.get(9).unwrap_or(0),
+                tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                session_count: row.get(11).unwrap_or(1),
+                frequency_weight: row.get(12).unwrap_or(1.0),
+                session_ids: row.get(13).ok(),
             })
         })?;
 
         patterns.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    /// Mark patterns as used (updates last_used timestamp)
+    /// Mark patterns as used (updates last_used timestamp and increments access_count)
     /// Called after patterns are injected into context to prevent decay
     pub fn mark_patterns_used(&self, pattern_ids: &[i64]) -> Result<usize> {
         if pattern_ids.is_empty() {
@@ -456,7 +518,7 @@ impl PatternStore {
 
         let placeholders: Vec<String> = pattern_ids.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
-            "UPDATE patterns SET last_used = CURRENT_TIMESTAMP WHERE id IN ({})",
+            "UPDATE patterns SET last_used = CURRENT_TIMESTAMP, access_count = access_count + 1 WHERE id IN ({})",
             placeholders.join(",")
         );
 
@@ -473,7 +535,9 @@ impl PatternStore {
     pub fn get_top_patterns(&self, limit: usize) -> Result<Vec<Pattern>> {
         let mut stmt = self.conn.prepare_cached(
             r#"
-            SELECT id, pattern_hash, tool_type, command_category, context_query, success_count, failure_count, embedding_id
+            SELECT id, pattern_hash, tool_type, command_category, context_query,
+                   success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                   session_count, frequency_weight, session_ids
             FROM patterns
             WHERE tool_type != 'failure'
             ORDER BY (success_count - failure_count) DESC, success_count DESC
@@ -491,9 +555,334 @@ impl PatternStore {
                 success_count: row.get(5)?,
                 failure_count: row.get(6)?,
                 embedding_id: row.get(7)?,
+                last_used: row.get(8).ok(),
+                access_count: row.get(9).unwrap_or(0),
+                tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                session_count: row.get(11).unwrap_or(1),
+                frequency_weight: row.get(12).unwrap_or(1.0),
+                session_ids: row.get(13).ok(),
             })
         })?;
 
         patterns.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+
+    /// Get patterns by tier path
+    /// Returns patterns matching the exact tier path
+    pub fn get_by_tier(&self, tier: &TierPath, limit: usize) -> Result<Vec<Pattern>> {
+        let tier_str = tier.to_path_string();
+
+        let mut stmt = self.conn.prepare_cached(
+            r#"
+            SELECT id, pattern_hash, tool_type, command_category, context_query,
+                   success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                   session_count, frequency_weight, session_ids
+            FROM patterns
+            WHERE tier_path = ?1
+            ORDER BY (success_count - failure_count) DESC, success_count DESC
+            LIMIT ?2
+            "#,
+        )?;
+
+        let patterns = stmt.query_map(params![tier_str, limit as i64], |row| {
+            Ok(Pattern {
+                id: row.get(0)?,
+                pattern_hash: row.get(1)?,
+                tool_type: row.get(2)?,
+                command_category: row.get(3)?,
+                context_query: row.get(4)?,
+                success_count: row.get(5)?,
+                failure_count: row.get(6)?,
+                embedding_id: row.get(7)?,
+                last_used: row.get(8).ok(),
+                access_count: row.get(9).unwrap_or(0),
+                tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                session_count: row.get(11).unwrap_or(1),
+                frequency_weight: row.get(12).unwrap_or(1.0),
+                session_ids: row.get(13).ok(),
+            })
+        })?;
+
+        patterns.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Search patterns with automatic tier fallback
+    ///
+    /// Searches through the tier hierarchy, returning patterns from the most specific
+    /// tier first, then falling back to broader tiers if needed.
+    ///
+    /// # Arguments
+    ///
+    /// * `tier` - The starting tier path to search from
+    /// * `tool_type` - Optional tool type filter (None = all tool types)
+    /// * `limit` - Maximum total patterns to return across all tiers
+    ///
+    /// # Returns
+    ///
+    /// Patterns ordered by:
+    /// 1. Tier priority (Agent > Project > Domain > Global)
+    /// 2. Score within each tier (success_count - failure_count)
+    pub fn search_with_fallback(
+        &self,
+        tier: &TierPath,
+        tool_type: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Pattern>> {
+        let fallback_order = tier.search_fallback_order();
+        let mut all_patterns = Vec::new();
+        let mut remaining = limit;
+
+        for tier_path in fallback_order {
+            if remaining == 0 {
+                break;
+            }
+
+            let tier_str = tier_path.to_path_string();
+
+            let patterns = if let Some(tt) = tool_type {
+                // Filter by both tier and tool type
+                let mut stmt = self.conn.prepare_cached(
+                    r#"
+                    SELECT id, pattern_hash, tool_type, command_category, context_query,
+                           success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                           session_count, frequency_weight, session_ids
+                    FROM patterns
+                    WHERE tier_path = ?1 AND tool_type = ?2
+                    ORDER BY (success_count - failure_count) DESC, success_count DESC
+                    LIMIT ?3
+                    "#,
+                )?;
+
+                stmt.query_map(params![tier_str, tt, remaining as i64], |row| {
+                    Ok(Pattern {
+                        id: row.get(0)?,
+                        pattern_hash: row.get(1)?,
+                        tool_type: row.get(2)?,
+                        command_category: row.get(3)?,
+                        context_query: row.get(4)?,
+                        success_count: row.get(5)?,
+                        failure_count: row.get(6)?,
+                        embedding_id: row.get(7)?,
+                        last_used: row.get(8).ok(),
+                        access_count: row.get(9).unwrap_or(0),
+                        tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                        session_count: row.get(11).unwrap_or(1),
+                        frequency_weight: row.get(12).unwrap_or(1.0),
+                        session_ids: row.get(13).ok(),
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            } else {
+                // Filter by tier only
+                let mut stmt = self.conn.prepare_cached(
+                    r#"
+                    SELECT id, pattern_hash, tool_type, command_category, context_query,
+                           success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                           session_count, frequency_weight, session_ids
+                    FROM patterns
+                    WHERE tier_path = ?1
+                    ORDER BY (success_count - failure_count) DESC, success_count DESC
+                    LIMIT ?2
+                    "#,
+                )?;
+
+                stmt.query_map(params![tier_str, remaining as i64], |row| {
+                    Ok(Pattern {
+                        id: row.get(0)?,
+                        pattern_hash: row.get(1)?,
+                        tool_type: row.get(2)?,
+                        command_category: row.get(3)?,
+                        context_query: row.get(4)?,
+                        success_count: row.get(5)?,
+                        failure_count: row.get(6)?,
+                        embedding_id: row.get(7)?,
+                        last_used: row.get(8).ok(),
+                        access_count: row.get(9).unwrap_or(0),
+                        tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                        session_count: row.get(11).unwrap_or(1),
+                        frequency_weight: row.get(12).unwrap_or(1.0),
+                        session_ids: row.get(13).ok(),
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+            };
+
+            let found = patterns.len();
+            all_patterns.extend(patterns);
+            remaining = remaining.saturating_sub(found);
+        }
+
+        Ok(all_patterns)
+    }
+
+    /// Get high-frequency instruction patterns for context injection
+    ///
+    /// Returns instruction patterns ordered by frequency weight (how often they're repeated).
+    /// Patterns that appear across multiple sessions get higher weight.
+    pub fn get_high_frequency_instructions(&self, limit: usize) -> Result<Vec<Pattern>> {
+        let mut stmt = self.conn.prepare_cached(
+            r#"
+            SELECT id, pattern_hash, tool_type, command_category, context_query,
+                   success_count, failure_count, embedding_id, last_used, access_count, tier_path,
+                   session_count, frequency_weight, session_ids
+            FROM patterns
+            WHERE tool_type = 'instruction'
+            ORDER BY frequency_weight DESC, session_count DESC
+            LIMIT ?1
+            "#,
+        )?;
+
+        let patterns = stmt.query_map(params![limit as i64], |row| {
+            Ok(Pattern {
+                id: row.get(0)?,
+                pattern_hash: row.get(1)?,
+                tool_type: row.get(2)?,
+                command_category: row.get(3)?,
+                context_query: row.get(4)?,
+                success_count: row.get(5)?,
+                failure_count: row.get(6)?,
+                embedding_id: row.get(7)?,
+                last_used: row.get(8).ok(),
+                access_count: row.get(9).unwrap_or(0),
+                tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                session_count: row.get(11).unwrap_or(1),
+                frequency_weight: row.get(12).unwrap_or(1.0),
+                session_ids: row.get(13).ok(),
+            })
+        })?;
+
+        patterns.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Update instruction pattern with new session occurrence
+    ///
+    /// Tracks which sessions an instruction appears in, updates frequency weight,
+    /// and increments usage counts. This is the key mechanism for detecting
+    /// repeated user instructions across sessions.
+    pub fn update_instruction_occurrence(&self, pattern_id: i64, session_id: &str) -> Result<()> {
+        use std::collections::HashSet;
+
+        // Get current session_ids
+        let current_sessions: Option<String> = self.conn.query_row(
+            "SELECT session_ids FROM patterns WHERE id = ?",
+            params![pattern_id],
+            |row| row.get(0),
+        ).ok().flatten();
+
+        let mut session_set: HashSet<String> = current_sessions
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        let is_new_session = session_set.insert(session_id.to_string());
+
+        if is_new_session {
+            let new_session_count = session_set.len() as i64;
+            let total_occurrences: i64 = self.conn.query_row(
+                "SELECT success_count + failure_count FROM patterns WHERE id = ?",
+                params![pattern_id],
+                |row| row.get(0),
+            ).unwrap_or(1) + 1;
+
+            let new_weight = calculate_frequency_weight(new_session_count, total_occurrences);
+
+            self.conn.execute(
+                r#"
+                UPDATE patterns
+                SET session_count = ?,
+                    frequency_weight = ?,
+                    session_ids = ?,
+                    success_count = success_count + 1,
+                    last_used = CURRENT_TIMESTAMP
+                WHERE id = ?
+                "#,
+                params![
+                    new_session_count,
+                    new_weight,
+                    serde_json::to_string(&session_set).unwrap_or_default(),
+                    pattern_id
+                ],
+            )?;
+        } else {
+            // Same session, just increment count
+            self.conn.execute(
+                "UPDATE patterns SET success_count = success_count + 1, last_used = CURRENT_TIMESTAMP WHERE id = ?",
+                params![pattern_id],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Insert instruction pattern with session tracking
+    ///
+    /// Inserts a new instruction pattern or updates an existing one if a similar
+    /// instruction already exists (using a lower 70% similarity threshold).
+    pub fn insert_instruction(&self, pattern: &Pattern, session_id: &str) -> Result<i64> {
+        use crate::storage::calculate_similarity;
+        use std::collections::HashSet;
+
+        // Check for existing similar instruction patterns (lower threshold than regular patterns)
+        let existing = self.get_by_tool("instruction", 50)?;
+
+        for existing_pattern in existing {
+            let similarity = calculate_similarity(&pattern.context_query, &existing_pattern.context_query);
+
+            // Use 70% threshold for instructions (vs 90% for regular patterns)
+            if similarity > 0.70 {
+                debug!("Found similar instruction pattern {} (similarity: {:.2}), updating occurrence",
+                       existing_pattern.id, similarity);
+
+                // Update the existing pattern's session tracking
+                self.update_instruction_occurrence(existing_pattern.id, session_id)?;
+                return Ok(existing_pattern.id);
+            }
+        }
+
+        // No similar pattern found, insert new one with initial session tracking
+        let mut session_set = HashSet::new();
+        session_set.insert(session_id.to_string());
+        let session_ids_json = serde_json::to_string(&session_set).unwrap_or_default();
+
+        self.conn.execute(
+            r#"
+            INSERT INTO patterns
+            (pattern_hash, tool_type, command_category, context_query, success_count, failure_count,
+             embedding_id, access_count, tier_path, session_count, frequency_weight, session_ids)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1.0, ?10)
+            "#,
+            params![
+                pattern.pattern_hash,
+                pattern.tool_type,
+                pattern.command_category,
+                pattern.context_query,
+                pattern.success_count,
+                pattern.failure_count,
+                pattern.embedding_id,
+                pattern.access_count,
+                pattern.tier_path,
+                session_ids_json
+            ],
+        )?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+}
+
+/// Calculate frequency weight for an instruction pattern
+///
+/// Weight increases logarithmically with occurrences, and cross-session
+/// appearances get a significant boost (50% for each order of magnitude
+/// of sessions).
+fn calculate_frequency_weight(session_count: i64, total_occurrences: i64) -> f64 {
+    // Base weight increases logarithmically with occurrences
+    let occurrence_factor = (1.0 + total_occurrences as f64).ln();
+
+    // Cross-session bonus: instructions appearing in multiple sessions are more important
+    let session_factor = if session_count > 1 {
+        1.0 + (session_count as f64).ln() * 0.5
+    } else {
+        1.0
+    };
+
+    occurrence_factor * session_factor
 }

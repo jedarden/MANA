@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 mod foreground;
 mod consolidation;
 pub mod trajectory;
+pub mod failure_analysis;
 
 // RL Algorithms
 pub mod qlearning;
@@ -40,6 +41,9 @@ pub mod model_based;
 
 // Reflexion Memory
 pub mod reflexion;
+
+// Transfer Learning
+pub mod transfer;
 
 pub use foreground::foreground_learn;
 pub use consolidation::{consolidate, spawn_consolidation};
@@ -83,6 +87,21 @@ pub use model_based::{ModelBasedAgent, ModelBasedConfig, Transition};
 // Reflexion Memory exports
 #[allow(unused_imports)]
 pub use reflexion::{ReflexionStore, Reflection, ReflectionInput, ReflectionOutcome, ReflexionStats};
+
+// Failure Analysis exports
+#[allow(unused_imports)]
+pub use failure_analysis::{
+    FailureAnalyzer, FailurePoint, FailureType, FailureSeverity,
+    TrajectoryAnalysis, RootCause, FailureStats
+};
+
+// Transfer Learning exports
+#[allow(unused_imports)]
+pub use transfer::{
+    TransferEngine, TransferConfig, TransferResult, TransferSource,
+    AdaptationStrategy, TransferablePattern, TransferPreview, PolicyTransferResult,
+    calculate_transferability
+};
 
 // Trajectory types are internal to foreground learning - only expose what's needed
 #[allow(unused_imports)]
