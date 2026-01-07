@@ -35,19 +35,19 @@ impl SimdDistance {
     pub fn similarity(&self, a: &[f32], b: &[f32]) -> f32 {
         match self.metric {
             DistanceMetric::Cosine => {
-                // simsimd returns cosine distance, convert to similarity
-                1.0 - f32::cosine(a, b).unwrap_or(1.0)
+                // simsimd returns cosine distance as f64, convert to similarity
+                (1.0 - f32::cosine(a, b).unwrap_or(1.0)) as f32
             }
             DistanceMetric::DotProduct => {
-                f32::dot(a, b).unwrap_or(0.0)
+                f32::dot(a, b).unwrap_or(0.0) as f32
             }
             DistanceMetric::Euclidean => {
                 // Convert distance to similarity
-                let dist = f32::sqeuclidean(a, b).unwrap_or(f32::MAX).sqrt();
-                1.0 / (1.0 + dist)
+                let dist = f32::sqeuclidean(a, b).unwrap_or(f64::MAX).sqrt();
+                (1.0 / (1.0 + dist)) as f32
             }
             DistanceMetric::InnerProduct => {
-                f32::inner(a, b).unwrap_or(0.0)
+                f32::dot(a, b).unwrap_or(0.0) as f32
             }
         }
     }
@@ -57,17 +57,17 @@ impl SimdDistance {
     pub fn distance(&self, a: &[f32], b: &[f32]) -> f32 {
         match self.metric {
             DistanceMetric::Cosine => {
-                f32::cosine(a, b).unwrap_or(1.0)
+                f32::cosine(a, b).unwrap_or(1.0) as f32
             }
             DistanceMetric::Euclidean => {
-                f32::sqeuclidean(a, b).unwrap_or(f32::MAX).sqrt()
+                f32::sqeuclidean(a, b).unwrap_or(f64::MAX).sqrt() as f32
             }
             DistanceMetric::DotProduct => {
                 // For dot product, higher is more similar
-                -f32::dot(a, b).unwrap_or(0.0)
+                -f32::dot(a, b).unwrap_or(0.0) as f32
             }
             DistanceMetric::InnerProduct => {
-                -f32::inner(a, b).unwrap_or(0.0)
+                -f32::dot(a, b).unwrap_or(0.0) as f32
             }
         }
     }

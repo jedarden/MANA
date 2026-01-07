@@ -146,6 +146,7 @@ pub fn import_patterns(
             last_used: None,
             access_count: 0,
             tier_path: "global".to_string(),
+            ..Default::default()
         };
 
         match merge_strategy {
@@ -272,6 +273,7 @@ pub fn import_patterns_from_vec(
             last_used: None,
             access_count: 0,
             tier_path: "global".to_string(),
+            ..Default::default()
         };
 
         match merge_strategy {

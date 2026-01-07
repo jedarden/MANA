@@ -248,10 +248,10 @@ impl TierPath {
         match self.tier {
             MemoryTier::Global => "global".to_string(),
             MemoryTier::Domain => {
-                format!("domain/{}", self.domain.as_ref().unwrap_or(&"unknown".to_string()))
+                format!("domain/{}", self.domain.as_deref().unwrap_or("unknown"))
             }
             MemoryTier::Project => {
-                let project = self.project.as_ref().unwrap_or(&"unknown".to_string());
+                let project = self.project.as_deref().unwrap_or("unknown");
                 if let Some(ref domain) = self.domain {
                     format!("project/{}@{}", project, domain)
                 } else {
@@ -259,7 +259,7 @@ impl TierPath {
                 }
             }
             MemoryTier::Agent => {
-                format!("agent/{}", self.agent_session.as_ref().unwrap_or(&"unknown".to_string()))
+                format!("agent/{}", self.agent_session.as_deref().unwrap_or("unknown"))
             }
         }
     }
@@ -269,10 +269,10 @@ impl TierPath {
         match self.tier {
             MemoryTier::Global => "Global (universal)".to_string(),
             MemoryTier::Domain => {
-                format!("Domain: {}", self.domain.as_ref().unwrap_or(&"unknown".to_string()))
+                format!("Domain: {}", self.domain.as_deref().unwrap_or("unknown"))
             }
             MemoryTier::Project => {
-                let project = self.project.as_ref().unwrap_or(&"unknown".to_string());
+                let project = self.project.as_deref().unwrap_or("unknown");
                 if let Some(ref domain) = self.domain {
                     format!("Project: {} ({})", project, domain)
                 } else {
@@ -280,7 +280,7 @@ impl TierPath {
                 }
             }
             MemoryTier::Agent => {
-                let session = self.agent_session.as_ref().unwrap_or(&"unknown".to_string());
+                let session = self.agent_session.as_deref().unwrap_or("unknown");
                 format!("Agent session: {}", session)
             }
         }

@@ -436,7 +436,7 @@ impl FailureAnalyzer {
             .map(|(t, c)| (t.clone(), *c))?;
 
         // Calculate confidence based on how dominant this failure type is
-        let confidence = *count as f64 / failures.len() as f64;
+        let confidence = count as f64 / failures.len() as f64;
 
         // Generate description and contributing factors
         let description = if failures.len() == 1 {

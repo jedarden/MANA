@@ -638,7 +638,7 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                     println!("======================\n");
                     println!("Testing {} dimensions with {} iterations\n", dimensions, iterations);
 
-                    let result = benchmark_simd(*dimensions, *iterations);
+                    let result = benchmark_simd(dimensions, iterations);
 
                     println!("Results:");
                     println!("  SIMD:  {:.2} ns/op", result.simd_ns_per_op);
@@ -1758,6 +1758,52 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                         println!("=============================");
                         println!();
 
+                        // Show what would be pruned without making changes
+                        let status = monitor.check_health(&conn)?;
+                        let actions = monitor.recommend_actions(&status);
+
+                        if actions.is_empty() {
+                            println!("No pruning actions would be taken.");
+                        } else {
+                            println!("The following actions would be taken:");
+                            for action in &actions {
+                                println!("  - {}", action);
+                            }
+                        }
+                    } else {
+                        // Actually perform auto-pruning
+                        let result = monitor.auto_prune(&conn)?;
+
+                        println!("Health Auto-Pruning Complete");
+                        println!("============================");
+                        println!();
+                        println!("Actions taken:");
+                        for action in &result.actions_taken {
+                            println!("  - {:?}", action);
+                        }
+                        println!();
+                        println!("Patterns deleted: {}", result.patterns_deleted);
+                        println!("Patterns decayed: {}", result.patterns_decayed);
+                        println!();
+                        println!("Health Score:");
+                        println!("  Before: {:.1}% {}",
+                            result.before_health.health_score * 100.0,
+                            if result.before_health.is_healthy { "(healthy)" } else { "(unhealthy)" }
+                        );
+                        println!("  After:  {:.1}% {}",
+                            result.after_health.health_score * 100.0,
+                            if result.after_health.is_healthy { "(healthy)" } else { "(unhealthy)" }
+                        );
+
+                        if result.after_health.is_healthy && !result.before_health.is_healthy {
+                            println!();
+                            println!("Database health improved!");
+                        }
+                    }
+                }
+            }
+        }
+
         Commands::Analyze { action } => {
             use learning::failure_analysis::FailureAnalyzer;
 
@@ -1944,54 +1990,7 @@ async fn run_async_main(cli: Cli) -> Result<()> {
                 }
             }
         }
-                        if actions.is_empty() {
-                            println!("No pruning actions needed. Database is healthy.");
-                        } else {
-                            println!("Would execute the following actions:");
-                            for action in &actions {
-                                println!("  - {:?}", action);
-                            }
-                            println!();
-                            println!("Current health score: {:.1}%", status.health_score * 100.0);
-                            println!();
-                            println!("Run without --dry-run to actually execute pruning.");
-                        }
-                    } else {
-                        // Execute pruning
-                        println!("Running health auto-pruning...");
-                        println!();
 
-                        let result = monitor.auto_prune(&conn)?;
-
-                        println!("Pruning Complete");
-                        println!("================");
-                        println!();
-                        println!("Actions taken: {}", result.actions_taken.len());
-                        for action in &result.actions_taken {
-                            println!("  - {:?}", action);
-                        }
-                        println!();
-                        println!("Patterns deleted: {}", result.patterns_deleted);
-                        println!("Patterns decayed: {}", result.patterns_decayed);
-                        println!();
-                        println!("Health Score:");
-                        println!("  Before: {:.1}% {}",
-                            result.before_health.health_score * 100.0,
-                            if result.before_health.is_healthy { "(healthy)" } else { "(unhealthy)" }
-                        );
-                        println!("  After:  {:.1}% {}",
-                            result.after_health.health_score * 100.0,
-                            if result.after_health.is_healthy { "(healthy)" } else { "(unhealthy)" }
-                        );
-
-                        if result.after_health.is_healthy && !result.before_health.is_healthy {
-                            println!();
-                            println!("Database health improved!");
-                        }
-                    }
-                }
-            }
-        }
         Commands::Transfer { action } => {
             use learning::{TransferEngine, TransferConfig, TransferSource, AdaptationStrategy};
 

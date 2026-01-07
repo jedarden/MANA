@@ -46,6 +46,27 @@ pub struct Pattern {
 fn default_session_count() -> i64 { 1 }
 fn default_frequency_weight() -> f64 { 1.0 }
 
+impl Default for Pattern {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            pattern_hash: String::new(),
+            tool_type: String::new(),
+            command_category: None,
+            context_query: String::new(),
+            success_count: 0,
+            failure_count: 0,
+            embedding_id: None,
+            last_used: None,
+            access_count: 0,
+            tier_path: "global".to_string(),
+            session_count: default_session_count(),
+            frequency_weight: default_frequency_weight(),
+            session_ids: None,
+        }
+    }
+}
+
 /// Pattern store backed by SQLite
 pub struct PatternStore {
     conn: Connection,
@@ -641,7 +662,7 @@ impl PatternStore {
 
             let patterns = if let Some(tt) = tool_type {
                 // Filter by both tier and tool type
-                let mut stmt = self.conn.prepare_cached(
+                let mut stmt = self.conn.prepare(
                     r#"
                     SELECT id, pattern_hash, tool_type, command_category, context_query,
                            success_count, failure_count, embedding_id, last_used, access_count, tier_path,
@@ -653,7 +674,7 @@ impl PatternStore {
                     "#,
                 )?;
 
-                stmt.query_map(params![tier_str, tt, remaining as i64], |row| {
+                let rows = stmt.query_map(params![tier_str, tt, remaining as i64], |row| {
                     Ok(Pattern {
                         id: row.get(0)?,
                         pattern_hash: row.get(1)?,
@@ -670,11 +691,11 @@ impl PatternStore {
                         frequency_weight: row.get(12).unwrap_or(1.0),
                         session_ids: row.get(13).ok(),
                     })
-                })?
-                .collect::<Result<Vec<_>, _>>()?
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()?
             } else {
                 // Filter by tier only
-                let mut stmt = self.conn.prepare_cached(
+                let mut stmt = self.conn.prepare(
                     r#"
                     SELECT id, pattern_hash, tool_type, command_category, context_query,
                            success_count, failure_count, embedding_id, last_used, access_count, tier_path,
@@ -686,7 +707,7 @@ impl PatternStore {
                     "#,
                 )?;
 
-                stmt.query_map(params![tier_str, remaining as i64], |row| {
+                let rows = stmt.query_map(params![tier_str, remaining as i64], |row| {
                     Ok(Pattern {
                         id: row.get(0)?,
                         pattern_hash: row.get(1)?,
@@ -703,8 +724,8 @@ impl PatternStore {
                         frequency_weight: row.get(12).unwrap_or(1.0),
                         session_ids: row.get(13).ok(),
                     })
-                })?
-                .collect::<Result<Vec<_>, _>>()?
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()?
             };
 
             let found = patterns.len();

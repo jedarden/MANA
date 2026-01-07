@@ -194,7 +194,7 @@ impl HealthMonitor {
         ).unwrap_or(0.0);
 
         // Get database file size
-        let db_path = conn.path().unwrap_or(std::path::Path::new(""));
+        let db_path = conn.path().unwrap_or("");
         let storage_size_bytes = std::fs::metadata(db_path)
             .map(|m| m.len())
             .unwrap_or(0);

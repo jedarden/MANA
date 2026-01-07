@@ -59,7 +59,7 @@ libc = "0.2"
 instant-distance = "0.6"
 
 # SIMD-accelerated vector operations
-simsimd = "0.4"
+simsimd = "6"
 
 # Sync module dependencies
 regex = "1"

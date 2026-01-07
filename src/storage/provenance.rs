@@ -7,7 +7,7 @@
 //! - Causal chain with evidence tracking
 
 use anyhow::{anyhow, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};

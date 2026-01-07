@@ -16,6 +16,9 @@ pub mod reasoning;
 pub mod health;
 pub mod simd_distance;
 pub mod pool;
+pub mod tiers;
+pub mod provenance;
+pub mod ranking;
 
 pub use patterns::{PatternStore, Pattern};
 pub use similarity::calculate_similarity;
@@ -31,6 +34,9 @@ pub use health::{HealthMonitor, HealthStatus, PruningAction, PruningConfig, Prun
 pub use pool::{ConnectionPool, PoolConfig, PoolStats, PoolManager, init_global_pool, get_read_connection, get_write_connection, get_pool_stats};
 #[allow(unused_imports)]
 pub use simd_distance::{SimdDistance, DistanceMetric, benchmark_simd, SimdBenchmarkResult};
+pub use tiers::TierPath;
+pub use provenance::{ProvenanceStore, ProvenanceCertificate, ActionJustification};
+pub use ranking::{PatternRanker, RankingConfig, RankedPattern};
 
 /// Initialize MANA storage and configuration
 pub async fn init() -> Result<()> {

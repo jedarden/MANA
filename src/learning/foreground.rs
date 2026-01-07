@@ -300,6 +300,7 @@ fn extract_per_tool_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
                     last_used: None,
                     access_count: 0,
                     tier_path: "global".to_string(),
+                    ..Default::default()
                 });
             }
             _ => continue,
@@ -420,8 +421,9 @@ fn extract_success_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             failure_count: 0,
             last_used: None,
             access_count: 0,
-                    tier_path: "global".to_string(),
+            tier_path: "global".to_string(),
             embedding_id: None,
+            ..Default::default()
         });
     }
 
@@ -635,7 +637,8 @@ fn extract_failure_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
                 embedding_id: None,
                 last_used: None,
                 access_count: 0,
-                    tier_path: "global".to_string(),
+                tier_path: "global".to_string(),
+                ..Default::default()
             });
 
             if patterns.len() >= MAX_PATTERNS_PER_TRAJECTORY {
@@ -970,7 +973,8 @@ fn extract_reasoning_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             embedding_id: None,
             last_used: None,
             access_count: 0,
-                    tier_path: "global".to_string(),
+            tier_path: "global".to_string(),
+            ..Default::default()
         });
 
         if patterns.len() >= MAX_PATTERNS_PER_TRAJECTORY {
@@ -1108,7 +1112,8 @@ fn extract_conversation_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
         embedding_id: None,
         last_used: None,
         access_count: 0,
-                    tier_path: "global".to_string(),
+        tier_path: "global".to_string(),
+        ..Default::default()
     });
 
     patterns
@@ -1251,7 +1256,8 @@ fn extract_system_patterns(trajectory: &Trajectory) -> Vec<Pattern> {
             embedding_id: None,
             last_used: None,
             access_count: 0,
-                    tier_path: "global".to_string(),
+            tier_path: "global".to_string(),
+            ..Default::default()
         });
 
         if patterns.len() >= 2 {

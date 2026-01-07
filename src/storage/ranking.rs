@@ -229,6 +229,7 @@ impl PatternRanker {
                 last_used: row.get(8).ok(),
                 access_count: row.get(9).unwrap_or(0),
                 tier_path: row.get(10).unwrap_or_else(|_| "global".to_string()),
+                ..Default::default()
             })
         })?;
 

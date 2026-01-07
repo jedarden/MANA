@@ -355,6 +355,7 @@ fn query_patterns_vector(
                 last_used: None,
                 access_count: 0,
                 tier_path: "global".to_string(),
+                ..Default::default()
             };
 
             // Combined score: 60% vector similarity, 40% success rate
