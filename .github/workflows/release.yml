@@ -31,7 +31,7 @@ jobs:
 
           # macOS Intel
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15
             artifact_name: mana
             asset_name: mana-darwin-x86_64
 
