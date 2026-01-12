@@ -188,6 +188,23 @@ pub async fn init() -> Result<()> {
         info!("Migrated patterns table to add instruction tracking columns (session_count, frequency_weight, session_ids)");
     }
 
+    // Migration: add tier_path column for hierarchical pattern organization
+    let has_tier_path: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('patterns') WHERE name = 'tier_path'",
+        [],
+        |row| Ok(row.get::<_, i64>(0)? > 0),
+    ).unwrap_or(false);
+
+    if !has_tier_path {
+        conn.execute("ALTER TABLE patterns ADD COLUMN tier_path TEXT DEFAULT 'global'", [])?;
+        // Create index for tier-based queries
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_patterns_tier ON patterns(tier_path)",
+            []
+        )?;
+        info!("Migrated patterns table to add tier_path column for hierarchical organization");
+    }
+
     info!("MANA initialized at {:?}", mana_dir);
 
     // Create default config if not exists
