@@ -41,6 +41,12 @@ jobs:
             artifact_name: mana
             asset_name: mana-darwin-aarch64
 
+          # Linux ARM64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact_name: mana
+            asset_name: mana-linux-aarch64
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,11 +56,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install dependencies (Linux)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install dependencies (Linux x86_64)
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Install dependencies (Linux ARM64 cross)
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config libssl-dev
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Build release binary
         run: |
@@ -133,6 +146,7 @@ jobs:
             | Platform | File | SHA256 |
             |----------|------|--------|
             | Linux x86_64 | `mana-linux-x86_64.tar.gz` | See `.sha256` file |
+            | Linux ARM64 | `mana-linux-aarch64.tar.gz` | See `.sha256` file |
             | macOS Intel | `mana-darwin-x86_64.tar.gz` | See `.sha256` file |
             | macOS Apple Silicon | `mana-darwin-aarch64.tar.gz` | See `.sha256` file |
 
@@ -154,6 +168,12 @@ jobs:
             # macOS (Apple Silicon)
             curl -LO https://github.com/jedarden/MANA/releases/download/${{ steps.version.outputs.version }}/mana-darwin-aarch64.tar.gz
             tar -xzf mana-darwin-aarch64.tar.gz
+            chmod +x mana
+            sudo mv mana /usr/local/bin/
+
+            # Linux ARM64
+            curl -LO https://github.com/jedarden/MANA/releases/download/${{ steps.version.outputs.version }}/mana-linux-aarch64.tar.gz
+            tar -xzf mana-linux-aarch64.tar.gz
             chmod +x mana
             sudo mv mana /usr/local/bin/
             ```
