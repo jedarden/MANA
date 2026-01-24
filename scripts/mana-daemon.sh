@@ -26,6 +26,8 @@ MANA_LEARN_INTERVAL="${MANA_LEARN_INTERVAL:-300}"
 MANA_CONSOLIDATE_INTERVAL="${MANA_CONSOLIDATE_INTERVAL:-3600}"
 MANA_SYNC_INTERVAL="${MANA_SYNC_INTERVAL:-3600}"
 MANA_SYNC_ENABLED="${MANA_SYNC_ENABLED:-false}"
+MANA_BACKUP_INTERVAL="${MANA_BACKUP_INTERVAL:-1800}"  # Backup every 30 minutes
+MANA_BACKUP_DIR="${MANA_BACKUP_DIR:-$HOME/.mana/backups}"
 MANA_LOG_DIR="${MANA_LOG_DIR:-$HOME/.mana/logs}"
 PID_FILE="${MANA_PID_FILE:-$HOME/.mana/daemon.pid}"
 
@@ -90,10 +92,14 @@ daemon_loop() {
     log_info "Binary: $MANA_BINARY"
     log_info "Learn interval: ${MANA_LEARN_INTERVAL}s"
     log_info "Consolidate interval: ${MANA_CONSOLIDATE_INTERVAL}s"
+    log_info "Backup interval: ${MANA_BACKUP_INTERVAL}s"
     log_info "Sync enabled: $MANA_SYNC_ENABLED"
     if [[ "$MANA_SYNC_ENABLED" == "true" ]]; then
         log_info "Sync interval: ${MANA_SYNC_INTERVAL}s"
     fi
+
+    # Ensure backup directory exists
+    mkdir -p "$MANA_BACKUP_DIR"
 
     if [[ -z "$MANA_BINARY" ]] || [[ ! -x "$MANA_BINARY" ]]; then
         log_error "MANA binary not found or not executable"
@@ -103,6 +109,7 @@ daemon_loop() {
     local last_learn=0
     local last_consolidate=0
     local last_sync=0
+    local last_backup=0
 
     # Trap signals for clean shutdown
     trap 'log_info "Shutting down..."; exit 0' SIGTERM SIGINT
@@ -156,6 +163,26 @@ daemon_loop() {
                 last_sync=$now
                 log_info "Sync cycle complete"
             fi
+        fi
+
+        # Run periodic backup/export if interval elapsed
+        if (( now - last_backup >= MANA_BACKUP_INTERVAL )); then
+            log_info "Running pattern backup"
+            local backup_file="$MANA_BACKUP_DIR/mana-patterns-$(date '+%Y%m%d-%H%M%S').json"
+
+            if "$MANA_BINARY" export --output "$backup_file" 2>&1 | head -5; then
+                log_info "Backup complete: $backup_file"
+
+                # Keep only last 10 backups
+                local backup_count=$(ls -1 "$MANA_BACKUP_DIR"/mana-patterns-*.json 2>/dev/null | wc -l)
+                if (( backup_count > 10 )); then
+                    log_info "Pruning old backups (keeping last 10)"
+                    ls -1t "$MANA_BACKUP_DIR"/mana-patterns-*.json | tail -n +11 | xargs rm -f
+                fi
+            else
+                log_error "Backup failed"
+            fi
+            last_backup=$now
         fi
 
         # Sleep for a short interval to check for signals
