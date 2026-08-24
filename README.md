@@ -518,3 +518,9 @@ MIT License - see [LICENSE](LICENSE) for details.
 [Report Bug](https://github.com/jedarden/MANA/issues) • [Request Feature](https://github.com/jedarden/MANA/issues)
 
 </div>
+
+---
+
+Part of [jedarden.com](https://jedarden.com) · Read the write-up: [jedarden.com/projects/mana/](https://jedarden.com/projects/mana/)
+
+*This GitHub repo is a read-only mirror of git.ardenone.com/jedarden/MANA — issues and PRs are welcome here either way.*
