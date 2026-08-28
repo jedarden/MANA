@@ -1,60 +1,52 @@
-# 🧠 MANA - Memory-Augmented Neural Assistant
+# MANA
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-0.7.2-blue.svg)
+![Version](https://img.shields.io/badge/version-0.7.3-blue.svg)
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
 
-**A high-performance learning system for Claude Code that improves context injection through pattern recognition, reinforcement learning, and causal reasoning.**
+**A Rust CLI and daemon that hooks into Claude Code, extracts reusable patterns from session transcripts, and injects the relevant ones back into context before a tool runs.**
 
-[Features](#-features) • [Installation](#-installation) • [Quick Start](#-quick-start) • [CLI Commands](#-cli-commands) • [Benchmarks](#-benchmarks)
+[Features](#features) • [Installation](#installation) • [Quick Start](#quick-start) • [CLI Commands](#cli-commands) • [Benchmarks](#benchmarks)
 
 </div>
 
 ---
 
-## 📖 Overview
+## Overview
 
-MANA transforms Claude Code into a continuously learning assistant by:
+MANA ("Memory-Augmented Neural Assistant" — the name is historical; the current binary contains no neural model) is a pattern memory for Claude Code. It works through Claude Code's hook system:
 
-- 🔍 **Extracting patterns** from interactions via hooks
-- 📈 **Learning from trajectories** to understand what works
-- ⚡ **Injecting context** in under 10ms for real-time assistance
-- 🔄 **Adapting patterns** across sessions and projects
-- 🧬 **Reasoning causally** about why patterns succeed together
-- 🌐 **Synchronizing knowledge** across workspaces with encryption
+- **Extracts patterns from sessions.** The session-end hook parses the transcript into trajectories (`src/learning/trajectory.rs`), records which tool invocations succeeded, and stores the resulting patterns in SQLite (`.mana/`).
+- **Injects context before tools run.** A `PreToolUse` hook calls `mana inject --tool <tool>`, which asks the background daemon over a Unix socket for the patterns most similar to the current context and prints them for Claude. The latency budget for this path is 10 ms; `mana bench` measures it on your machine.
+- **Keeps per-pattern statistics** (success rate, usage, freshness) and ranks patterns with them; `mana health prune` decays and removes low-value patterns.
+- **Tracks which patterns are used together** in a co-occurrence graph with lift scores, queryable from the CLI (`mana causal ...`).
+- **Analyzes failures** (`src/learning/failure_analysis.rs`) and stores reflections on what went wrong.
+- **Syncs the pattern store between workspaces** over git, S3, Supabase, or a direct peer-to-peer connection, with AES-256-GCM encryption and secret redaction.
+
+Embeddings are TF-IDF-style hashed vectors (`src/embeddings/model.rs`), not a transformer model; nearest-neighbour search uses an HNSW index from `instant-distance`, and distance calculations use `simsimd`.
 
 ---
 
-## ✨ Features
+## Features
 
-### 🎯 Core Capabilities
+### Core capabilities
 
 | Feature | Description |
 |---------|-------------|
-| **Pattern Learning** | Automatically extracts and stores successful patterns from Claude Code sessions |
-| **Context Injection** | Pre-hook system injects relevant patterns before tool execution (<10ms) |
-| **Trajectory Analysis** | Learns from entire conversation flows, not just individual commands |
-| **Failure Analysis** | Root cause analysis of failed operations with Reflexion-style learning |
+| **Pattern learning** | Extracts patterns from Claude Code session transcripts at session end and stores them in SQLite with success statistics |
+| **Context injection** | `PreToolUse` hook queries the daemon and prints relevant patterns before tool execution; 10 ms latency budget, checked by `mana bench` |
+| **Trajectory analysis** | Parses whole conversation flows into trajectories rather than isolated commands (`src/learning/trajectory.rs`) |
+| **Failure analysis** | Root-cause analysis of failed operations with stored reflections (`src/learning/failure_analysis.rs`, `src/learning/reflexion.rs`) |
 
-### 🤖 Reinforcement Learning Suite
+### Learning modules
 
-MANA implements **9 RL algorithms** for adaptive pattern optimization:
+`src/learning/` contains implementations of nine reinforcement-learning algorithms: Q-learning, SARSA, DQN (linear function approximation), REINFORCE policy gradient, actor-critic, PPO, a decision transformer, MCTS, and a model-based agent. Each is a self-contained module with unit tests.
 
-| Algorithm | Type | Best For |
-|-----------|------|----------|
-| 📊 **Q-Learning** | Off-policy TD | Classic, effective baseline |
-| 🎯 **SARSA** | On-policy TD | Safer exploration |
-| 🧠 **DQN** | Deep Q-Network | Function approximation |
-| 🎲 **Policy Gradient** | REINFORCE | Direct policy optimization |
-| 🎭 **Actor-Critic** | Value + Policy | Lower variance training |
-| 🚀 **PPO** | Proximal Policy | Stable, sample efficient |
-| 🔮 **Decision Transformer** | Sequence Modeling | Return-conditioned RL |
-| 🌳 **MCTS** | Monte Carlo Tree Search | Simulation-based planning |
-| 🏗️ **Model-Based** | Dynamics Learning | Sample efficient MPC |
+As of 0.7.3 only the Q-learning Q-table is used by a CLI command (`mana transfer policy` copies it between projects). Pattern ranking in the injection path uses the stored success statistics (`src/storage/ranking.rs`), not these agents. Treat the other eight modules as library code that is not yet wired into the runtime.
 
-### 🔬 Causal Reasoning System
+### Pattern co-occurrence ("causal") graph
 
 ```
 Pattern A ──[Causes]──► Pattern B
@@ -62,56 +54,53 @@ Pattern A ──[Causes]──► Pattern B
     └──[Enables]────────────┘
 ```
 
-- **Do-Calculus** interventions with confidence intervals
-- **Confounder detection** using Pearl's backdoor criterion
-- **Multi-hop causal chains** via BFS pathfinding
-- **Relation types**: Causes, Enables, Prevents, Correlates, Precedes, DerivedFrom, Contradicts
-- **Lift interpretation**: >1.5 = synergy, <0.5 = conflict
+`src/storage/causal.rs` maintains edges between patterns that appear together, with a lift score that moves up when they succeed together and down when they fail together (roughly >1.5 = synergy, <0.5 = conflict). On top of that:
 
-### ⚡ SIMD Acceleration
+- `do_intervention` reports the lift between a treatment and outcome pattern with a 95% confidence interval and any detected confounders. This is an observational estimate from the co-occurrence data, not a full do-calculus adjustment.
+- `detect_confounders` looks for patterns connected to both ends of an edge and scores them by the product of their correlations (a backdoor-path heuristic).
+- `find_causal_chains` finds multi-hop paths between two patterns by breadth-first search.
+- Edge relation types: Causes, Enables, Prevents, Correlates, Precedes, DerivedFrom, Contradicts.
 
-Leverages `simsimd` for vectorized operations:
+### SIMD distance calculations
 
-- **4-8x speedup** on x86 (AVX2/AVX-512)
-- **3-5x speedup** on ARM (NEON)
-- Sub-microsecond similarity for 384-dim vectors
-- Supports: Cosine, Euclidean, Dot Product, Inner Product
+`src/storage/simd_distance.rs` uses `simsimd`, which dispatches to AVX2/AVX-512 on x86 and NEON on ARM at runtime:
 
-### 🌐 Multi-Workspace Sync
+- Metrics: cosine, Euclidean, dot product, inner product
+- Batch similarity and top-k helpers
+- `mana bench simd` compares it against a naive implementation on your hardware; no speedup figures are committed in this repository
 
-| Backend | Use Case | Features |
-|---------|----------|----------|
-| 📁 **Git** | Simple, offline | Gitea/GitLab compatible |
-| ☁️ **S3** | Scalable | MinIO, SeaweedFS support |
-| 🗄️ **Supabase** | Teams | Real-time collaboration |
-| 🔗 **P2P** | Decentralized | CRDT merge, mesh network |
+### Multi-workspace sync
 
-**Security**: AES-256-GCM encryption, Argon2 key derivation, path sanitization, secret redaction
+| Backend | Notes |
+|---------|-------|
+| **Git** | Pushes an encrypted export to any git remote |
+| **S3** | S3 or an S3-compatible endpoint (`MANA_S3_ENDPOINT`); requires `--features s3` |
+| **Supabase** | Shared store with team commands; requires `--features supabase` |
+| **P2P** | Direct TCP exchange between peers, merged as a last-writer-wins map (`src/sync/p2p_backend.rs`) |
 
-### 🔍 Provenance & Explainability
+**Security**: AES-256-GCM encryption with an Argon2id-derived key, path sanitization, and regex-based redaction of API keys and tokens before export (`src/sync/crypto.rs`, `src/sync/sanitize.rs`).
 
-- Track **why** patterns were selected
-- Full **reasoning chains** with justification
-- **Verify** provenance integrity
-- Human-readable **explanations**
+### Provenance
+
+`src/storage/provenance.rs` records why each pattern was selected so that `mana provenance explain` can show the reasoning chain, `mana provenance justify` can explain recent actions, and `mana provenance verify` can check the record's integrity.
 
 ---
 
-## 📦 Installation
+## Installation
 
 ### Prerequisites
 
-- Rust 1.70+ (2021 edition)
-- SQLite 3.x (bundled)
+- Rust (2021 edition)
+- SQLite 3.x (bundled via `rusqlite`)
 
-### Build from Source
+### Build from source
 
 ```bash
-cd mana
+cd MANA
 cargo build --release
 ```
 
-### Optional Features
+### Optional features
 
 ```bash
 # Enable S3 sync support
@@ -126,37 +115,39 @@ cargo build --release --all-features
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
-### 1️⃣ Initialize MANA
+### 1. Initialize MANA
 
 ```bash
 mana init
 ```
 
-### 2️⃣ Start the Daemon
+### 2. Start the daemon
 
 ```bash
 mana daemon start
 ```
 
-### 3️⃣ Check Status
+### 3. Check status
 
 ```bash
 mana status
 ```
 
-### 4️⃣ View Patterns
+### 4. View patterns
 
 ```bash
 mana patterns list
 ```
 
+Hook wiring for Claude Code (`PreToolUse` → `mana inject`, `Stop` → `mana session-end`) is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ---
 
-## 💻 CLI Commands
+## CLI Commands
 
-### 📋 Core Commands
+### Core commands
 
 ```bash
 # Context injection (pre-hook)
@@ -172,7 +163,7 @@ mana consolidate
 mana stats
 ```
 
-### 🗂️ Pattern Management
+### Pattern management
 
 ```bash
 # List all patterns
@@ -189,13 +180,13 @@ mana patterns export --output patterns.json
 mana patterns import --input patterns.json
 ```
 
-### 🧬 Causal Reasoning
+### Co-occurrence graph
 
 ```bash
 # View causal graph stats
 mana causal stats
 
-# Run do-calculus intervention
+# Estimate the effect of one pattern on another
 mana causal intervention <treatment_id> <outcome_id>
 
 # Find causal chains
@@ -205,7 +196,7 @@ mana causal chains <from_id> <to_id>
 mana causal confounders <treatment_id> <outcome_id>
 ```
 
-### 🔄 Transfer Learning
+### Transfer learning
 
 ```bash
 # Transfer patterns from another project
@@ -214,11 +205,11 @@ mana transfer from /path/to/source
 # List transferable patterns
 mana transfer list /path/to/source
 
-# Transfer RL policy
+# Copy the Q-learning table from another project
 mana transfer policy /path/to/source
 ```
 
-### 🌐 Synchronization
+### Synchronization
 
 ```bash
 # Initialize sync with a backend
@@ -234,7 +225,7 @@ mana sync pull
 mana sync status
 ```
 
-### 👥 Team Collaboration
+### Team collaboration (Supabase backend)
 
 ```bash
 # Create a team
@@ -250,7 +241,7 @@ mana team invite <team_id> user@email.com
 mana team share <team_id> <pattern_ids>
 ```
 
-### 🔧 Daemon Control
+### Daemon control
 
 ```bash
 # Start daemon (background)
@@ -266,7 +257,7 @@ mana daemon stop
 mana daemon logs --tail
 ```
 
-### 🏥 Health & Maintenance
+### Health and maintenance
 
 ```bash
 # Check health status
@@ -280,7 +271,7 @@ mana health prune --dry-run  # Preview only
 mana relearn
 ```
 
-### 🔍 Provenance
+### Provenance
 
 ```bash
 # Explain why a pattern was selected
@@ -298,64 +289,38 @@ mana provenance verify
 
 ---
 
-## 📊 Benchmarks
+## Benchmarks
 
-### 🎯 Performance Targets
+### Performance targets
+
+These are the budgets `mana bench` (`src/bench.rs`) checks against. They are targets, not measurements; no benchmark results are committed in this repository.
 
 | Metric | Target | Description |
 |--------|--------|-------------|
-| ⚡ **Context Injection** | <10ms | Time to inject relevant patterns |
-| 🔍 **Pattern Search** | <0.5ms | HNSW approximate nearest neighbor |
-| 💾 **Similarity Cache Hit** | <10μs | In-memory cache lookup |
-| 📝 **Session-End Parse** | <20ms | Log parsing and analysis |
-| 🚀 **Binary Startup** | <50ms | Cold start time |
-| 🧮 **SIMD Vector Ops** | <1μs | 384-dimensional vectors |
+| **Context injection** | <10 ms | End-to-end `mana inject` including process start |
+| **Pattern search** | <0.5 ms | Database query plus similarity ranking |
+| **Similarity cache hit** | <10 μs | In-memory cache lookup |
+| **Session-end parse** | <20 ms | Transcript parsing |
+| **Binary startup** | <50 ms | Cold start |
 
-### 📈 Running Benchmarks
+### Running benchmarks
 
 ```bash
-# Run SIMD benchmark suite
+# Built-in latency checks against the targets above
+mana bench
+
+# SIMD vs naive distance calculations
 mana bench simd
 
-# Run full benchmark suite (requires criterion)
+# Criterion micro-benchmarks (database, vector search, cache, serialization, end-to-end retrieval)
 cargo bench
 ```
 
-### 🔬 SIMD Benchmark Results
-
-```
-Benchmark: 384-dimensional vectors
-┌────────────────────┬───────────┬──────────┐
-│ Metric             │ Scalar    │ SIMD     │
-├────────────────────┼───────────┼──────────┤
-│ Cosine Similarity  │ 12.3 μs   │ 0.8 μs   │
-│ Euclidean Distance │ 10.1 μs   │ 0.6 μs   │
-│ Dot Product        │ 8.7 μs    │ 0.5 μs   │
-│ Batch (1000 pairs) │ 11.2 ms   │ 1.4 ms   │
-└────────────────────┴───────────┴──────────┘
-Speedup: 8-15x on AVX-512
-```
-
-### 🏗️ Architecture Benchmarks
-
-```
-Context Injection Pipeline:
-┌─────────────────────────────────────────────────────┐
-│ 1. Socket connect .......... 0.1ms                  │
-│ 2. Query parse ............. 0.2ms                  │
-│ 3. Embedding lookup ........ 1.2ms                  │
-│ 4. HNSW search ............. 0.4ms                  │
-│ 5. Causal filtering ........ 0.8ms                  │
-│ 6. Pattern ranking ......... 0.3ms                  │
-│ 7. Response serialize ...... 0.2ms                  │
-├─────────────────────────────────────────────────────┤
-│ TOTAL ...................... 3.2ms (target: <10ms) │
-└─────────────────────────────────────────────────────┘
-```
+`benches/comprehensive.rs` covers database operations, HNSW search at several index sizes, the distance metrics, quantization, serialization, the similarity cache, and a full retrieval pipeline. Run it to get numbers for your hardware.
 
 ---
 
-## 🗄️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -374,27 +339,27 @@ Context Injection Pipeline:
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
 │  │  Learning    │    │   Causal     │    │    Sync      │  │
 │  │  ──────────  │    │  ──────────  │    │  ──────────  │  │
-│  │ • RL Suite   │◄──►│ • Do-calc    │◄──►│ • Git        │  │
-│  │ • Transfer   │    │ • Chains     │    │ • S3         │  │
-│  │ • Reflexion  │    │ • Lift       │    │ • Supabase   │  │
-│  │ • Trajectory │    │ • Confound   │    │ • P2P/CRDT   │  │
+│  │ • Trajectory │◄──►│ • Lift       │◄──►│ • Git        │  │
+│  │ • Failure    │    │ • Chains     │    │ • S3         │  │
+│  │ • Reflexion  │    │ • Confound   │    │ • Supabase   │  │
+│  │ • Transfer   │    │ • Intervene  │    │ • P2P        │  │
 │  └──────────────┘    └──────────────┘    └──────────────┘  │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 📁 Directory Structure
+### Directory structure
 
 ```
-mana/
+MANA/
 ├── src/
-│   ├── main.rs              # CLI interface (2,576 lines)
-│   ├── daemon/              # Background service
-│   ├── embeddings/          # Vector embeddings & HNSW
+│   ├── main.rs              # CLI interface
+│   ├── daemon/              # Background service (Unix socket)
+│   ├── embeddings/          # Hashed TF-IDF embeddings, HNSW index, quantization
 │   ├── hooks/               # Claude Code integration
-│   ├── learning/            # RL algorithms & transfer
+│   ├── learning/            # Trajectories, failure analysis, RL modules, transfer
 │   ├── reflection/          # Pattern effectiveness
-│   ├── storage/             # SQLite, causal, patterns
+│   ├── storage/             # SQLite, co-occurrence graph, provenance, SIMD distance
 │   └── sync/                # Multi-workspace sync
 ├── tests/                   # Integration tests
 ├── benches/                 # Criterion benchmarks
@@ -403,49 +368,49 @@ mana/
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
-MANA uses TOML configuration at `.mana/config.toml`:
+`mana init` writes `.mana/config.toml` with these defaults:
 
 ```toml
-[general]
-log_level = "info"
-
-[daemon]
-socket_path = ".mana/daemon.sock"
-cache_size = 1000
-
 [learning]
-min_success_rate = 0.6
-prune_threshold = 0.3
+# Trajectory threshold before triggering learning
+threshold = 15
+# Maximum patterns to inject per context
+max_patterns_per_context = 5
 
-[sync]
-backend = "git"
-auto_sync = true
-encrypt = true
+[performance]
+# Maximum time for context injection in milliseconds
+injection_timeout_ms = 10
+# Maximum time for pattern search in milliseconds
+search_timeout_ms = 5
 
-[embeddings]
-model = "minilm"
-dimensions = 384
+[storage]
+# Maximum number of patterns to keep
+max_patterns = 10000
+# Decay factor for unused patterns (0-1)
+decay_factor = 0.95
 ```
+
+As of 0.7.3 the binary writes this file but does not read these values back; the corresponding limits are compiled in. Sync backend settings are stored in their own files under `.mana/` by `mana sync init`.
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Core mission & system design |
-| [CAUSAL_SYSTEM_SUMMARY.md](docs/CAUSAL_SYSTEM_SUMMARY.md) | Causal reasoning overview |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design and hook wiring |
+| [CAUSAL_SYSTEM_SUMMARY.md](docs/CAUSAL_SYSTEM_SUMMARY.md) | Co-occurrence graph overview |
 | [TRANSFER_QUICKSTART.md](docs/TRANSFER_QUICKSTART.md) | Transfer learning guide |
-| [HEALTH_MONITORING.md](docs/HEALTH_MONITORING.md) | Health & pruning |
-| [SIMD_INTEGRATION.md](docs/SIMD_INTEGRATION.md) | SIMD acceleration |
-| [PROVENANCE_IMPLEMENTATION.md](docs/PROVENANCE_IMPLEMENTATION.md) | Explainability system |
+| [HEALTH_MONITORING.md](docs/HEALTH_MONITORING.md) | Health and pruning |
+| [SIMD_INTEGRATION.md](docs/SIMD_INTEGRATION.md) | SIMD distance calculations |
+| [PROVENANCE_IMPLEMENTATION.md](docs/PROVENANCE_IMPLEMENTATION.md) | Provenance system |
 | [CHANGELOG.md](docs/CHANGELOG.md) | Version history |
 
 ---
 
-## 🔧 Development
+## Development
 
 ### Building
 
@@ -483,7 +448,7 @@ cargo bench
 cargo run --release -- bench simd
 ```
 
-### Release Profile
+### Release profile
 
 ```toml
 [profile.release]
@@ -495,25 +460,23 @@ strip = true        # Strip symbols
 
 ---
 
-## 📜 License
+## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+Apache License 2.0 — see [LICENSE](LICENSE) for details.
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
-- **Claude Code** by Anthropic for the integration hooks
-- **instant-distance** for HNSW implementation
-- **simsimd** for SIMD-accelerated vector operations
+- **Claude Code** by Anthropic for the hook system
+- **instant-distance** for the HNSW implementation
+- **simsimd** for SIMD distance calculations
 - **rusqlite** for embedded SQLite
-- **Pearl's causal inference** framework for reasoning foundations
+- Pearl's causal inference work for the graph terminology
 
 ---
 
 <div align="center">
-
-**Built with 🦀 Rust for maximum performance**
 
 [Report Bug](https://github.com/jedarden/MANA/issues) • [Request Feature](https://github.com/jedarden/MANA/issues)
 
