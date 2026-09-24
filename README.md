@@ -4,7 +4,7 @@
 
 ![Version](https://img.shields.io/badge/version-0.7.3-blue.svg)
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
-![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 **A Rust CLI and daemon that hooks into Claude Code, extracts reusable patterns from session transcripts, and injects the relevant ones back into context before a tool runs.**
 
@@ -462,7 +462,7 @@ strip = true        # Strip symbols
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
